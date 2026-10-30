@@ -1,4 +1,4 @@
-const BASE = import.meta.env.VITE_API_URL ?? (window.location.hostname === 'localhost' ? 'http://localhost:3001' : '');
+const BASE = import.meta.env.VITE_API_URL || 'https://viyxasteqzqhcfxfzywx.supabase.co/functions/v1';
 export const TZ = 'America/Sao_Paulo';
 export const STUDIO = import.meta.env.VITE_STUDIO_NAME || 'Novolash Studio';
 
