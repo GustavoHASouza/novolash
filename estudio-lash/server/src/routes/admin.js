@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
-import { requireAuth } from '../auth.js';
+import { checkAdminPassword, hashPassword, requireAuth } from '../auth.js';
 import { book, localDate, toInstant } from '../slots.js';
 
 const r = Router();
@@ -11,6 +11,47 @@ const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const STATUSES = ['agendado', 'concluido', 'cancelado', 'faltou'];
 const bad = (res, msg = 'Dados inválidos') => res.status(400).json({ error: msg });
+
+/* ---------- Configurações da Conta & Estúdio ---------- */
+r.get('/settings', async (_req, res) => {
+  const { rows: [st] } = await q('SELECT studio_name, avatar_url FROM studio_settings WHERE id = 1');
+  res.json(st || { studio_name: 'Novolash Studio', avatar_url: '' });
+});
+
+r.put('/settings', async (req, res) => {
+  const studioName = req.body?.studio_name?.trim();
+  const avatarUrl = typeof req.body?.avatar_url === 'string' ? req.body.avatar_url.trim() : undefined;
+  if (!studioName) return bad(res, 'Informe o nome do estúdio');
+  const { rows: [st] } = await q(
+    `INSERT INTO studio_settings (id, studio_name, avatar_url, updated_at)
+     VALUES (1, $1, COALESCE($2, ''), now())
+     ON CONFLICT (id) DO UPDATE
+       SET studio_name = EXCLUDED.studio_name,
+           avatar_url = CASE WHEN $2 IS NULL THEN studio_settings.avatar_url ELSE $2 END,
+           updated_at = now()
+     RETURNING studio_name, avatar_url`,
+    [studioName, avatarUrl ?? null]
+  );
+  res.json(st);
+});
+
+r.put('/password', async (req, res) => {
+  const currentPassword = String(req.body?.current_password || '');
+  const newPassword = String(req.body?.new_password || '');
+  if (!currentPassword || newPassword.length < 6) {
+    return bad(res, 'A nova senha deve ter pelo menos 6 caracteres');
+  }
+  const validCurrent = await checkAdminPassword(currentPassword);
+  if (!validCurrent) return res.status(401).json({ error: 'Senha atual incorreta' });
+  const hashed = hashPassword(newPassword);
+  await q(
+    `INSERT INTO studio_settings (id, studio_name, avatar_url, password_hash, updated_at)
+     VALUES (1, 'Novolash Studio', '', $1, now())
+     ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash, updated_at = now()`,
+    [hashed]
+  );
+  res.json({ ok: true });
+});
 
 /* ---------- Agenda ---------- */
 r.get('/appointments', async (req, res) => {
@@ -27,13 +68,11 @@ r.get('/appointments', async (req, res) => {
   res.json(rows);
 });
 
-// agendamento manual pela profissional (ignora a grade de horários, respeita conflitos)
 r.post('/appointments', async (req, res) => {
   const [code, body] = await book(req.body, { force: true });
   res.status(code).json(body);
 });
 
-// muda status; ao concluir, lança a receita automaticamente (e remove ao reverter)
 r.patch('/appointments/:id', async (req, res) => {
   const { status } = req.body || {};
   if (!STATUSES.includes(status)) return bad(res);
@@ -155,6 +194,164 @@ r.get('/summary', async (req, res) => {
      GROUP BY type, category ORDER BY total DESC`, [req.query.month]);
   const sum = (t) => rows.filter((x) => x.type === t).reduce((s, x) => s + x.total, 0);
   res.json({ receita: sum('receita'), despesa: sum('despesa'), saldo: sum('receita') - sum('despesa'), categorias: rows });
+});
+
+/* ---------- Estoque (Inventory) ---------- */
+r.get('/inventory', async (_req, res) => {
+  const { rows } = await q(
+    `SELECT id, name, description, quantity, unit, last_cost_cents, updated_at
+     FROM inventory_items
+     ORDER BY name ASC, id ASC`
+  );
+  res.json(rows);
+});
+
+r.post('/inventory', async (req, res) => {
+  const name = req.body?.name?.trim();
+  const description = req.body?.description?.trim() || '';
+  const quantity = Math.max(0, parseInt(req.body?.quantity ?? 0, 10) || 0);
+  const unit = req.body?.unit?.trim() || 'un';
+  const costCents = Math.max(0, Math.round(Number(req.body?.cost || 0) * 100));
+  const occurredOn = DATE.test(req.body?.occurred_on || '') ? req.body.occurred_on : localDate(new Date());
+
+  if (!name) return bad(res, 'Informe o nome do material');
+
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const { rows: [item] } = await c.query(
+      `INSERT INTO inventory_items (name, description, quantity, unit, last_cost_cents, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now())
+       RETURNING id, name, description, quantity, unit, last_cost_cents, updated_at`,
+      [name, description, quantity, unit, costCents]
+    );
+    let txId = null;
+    if (costCents > 0) {
+      const txDesc = `Estoque: ${name}${quantity > 0 ? ` (${quantity} ${unit})` : ''}`;
+      const { rows: [tx] } = await c.query(
+        `INSERT INTO transactions (type, description, category, amount_cents, occurred_on)
+         VALUES ('despesa', $1, 'Material', $2, $3::date)
+         RETURNING id`,
+        [txDesc, costCents, occurredOn]
+      );
+      txId = tx?.id ?? null;
+    }
+    if (quantity > 0 || costCents > 0) {
+      await c.query(
+        `INSERT INTO inventory_movements (item_id, delta, cost_cents, notes, transaction_id, occurred_on)
+         VALUES ($1, $2, $3, 'Cadastro inicial de estoque', $4, $5::date)`,
+        [item.id, quantity, costCents, txId, occurredOn]
+      );
+    }
+    await c.query('COMMIT');
+    res.status(201).json({ ...item, transaction_id: txId });
+  } catch (e) {
+    await c.query('ROLLBACK');
+    throw e;
+  } finally {
+    c.release();
+  }
+});
+
+r.put('/inventory/:id', async (req, res) => {
+  const itemId = Number(req.params.id) || 0;
+  const name = req.body?.name?.trim();
+  const description = req.body?.description?.trim() || '';
+  const quantity = Math.max(0, parseInt(req.body?.quantity ?? 0, 10) || 0);
+  const unit = req.body?.unit?.trim() || 'un';
+  if (!name) return bad(res, 'Informe o nome do material');
+
+  const { rows: [item] } = await q(
+    `UPDATE inventory_items
+     SET name = $1, description = $2, quantity = $3, unit = $4, updated_at = now()
+     WHERE id = $5
+     RETURNING id, name, description, quantity, unit, last_cost_cents, updated_at`,
+    [name, description, quantity, unit, itemId]
+  );
+  if (!item) return res.status(404).json({ error: 'Item não encontrado' });
+  res.json(item);
+});
+
+r.delete('/inventory/:id', async (req, res) => {
+  await q('DELETE FROM inventory_items WHERE id = $1', [Number(req.params.id) || 0]);
+  res.json({ ok: true });
+});
+
+r.post('/inventory/:id/movements', async (req, res) => {
+  const itemId = Number(req.params.id) || 0;
+  const delta = parseInt(req.body?.delta ?? 0, 10) || 0;
+  const costCents = Math.max(0, Math.round(Number(req.body?.cost || 0) * 100));
+  const notes = req.body?.notes?.trim() || '';
+  const occurredOn = DATE.test(req.body?.occurred_on || '') ? req.body.occurred_on : localDate(new Date());
+
+  if (delta === 0 && costCents === 0) {
+    return bad(res, 'Informe a quantidade ou valor a movimentar');
+  }
+
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const { rows: [existing] } = await c.query(
+      'SELECT id, name, quantity, unit, last_cost_cents FROM inventory_items WHERE id = $1 FOR UPDATE',
+      [itemId]
+    );
+    if (!existing) {
+      await c.query('ROLLBACK');
+      return res.status(404).json({ error: 'Item não encontrado' });
+    }
+    const newQty = Math.max(0, existing.quantity + delta);
+    const newLastCost = costCents > 0 ? costCents : existing.last_cost_cents;
+
+    const { rows: [updated] } = await c.query(
+      `UPDATE inventory_items
+       SET quantity = $1, last_cost_cents = $2, updated_at = now()
+       WHERE id = $3
+       RETURNING id, name, description, quantity, unit, last_cost_cents, updated_at`,
+      [newQty, newLastCost, itemId]
+    );
+
+    let txId = null;
+    if (costCents > 0) {
+      const qtyLabel = delta > 0 ? ` (+${delta} ${existing.unit})` : '';
+      const txDesc = notes
+        ? `Estoque: ${existing.name}${qtyLabel} — ${notes}`
+        : `Compra de estoque: ${existing.name}${qtyLabel}`;
+      const { rows: [tx] } = await c.query(
+        `INSERT INTO transactions (type, description, category, amount_cents, occurred_on)
+         VALUES ('despesa', $1, 'Material', $2, $3::date)
+         RETURNING id`,
+        [txDesc, costCents, occurredOn]
+      );
+      txId = tx?.id ?? null;
+    }
+
+    await c.query(
+      `INSERT INTO inventory_movements (item_id, delta, cost_cents, notes, transaction_id, occurred_on)
+       VALUES ($1, $2, $3, $4, $5, $6::date)`,
+      [itemId, delta, costCents, notes || (delta > 0 ? 'Entrada de estoque' : 'Baixa de estoque'), txId, occurredOn]
+    );
+
+    await c.query('COMMIT');
+    res.json({ item: updated, transaction_id: txId });
+  } catch (e) {
+    await c.query('ROLLBACK');
+    throw e;
+  } finally {
+    c.release();
+  }
+});
+
+r.get('/inventory/:id/movements', async (req, res) => {
+  const itemId = Number(req.params.id) || 0;
+  const { rows } = await q(
+    `SELECT id, item_id, delta, cost_cents, notes, transaction_id, occurred_on::text AS occurred_on, created_at
+     FROM inventory_movements
+     WHERE item_id = $1
+     ORDER BY created_at DESC
+     LIMIT 30`,
+    [itemId]
+  );
+  res.json(rows);
 });
 
 export default r;

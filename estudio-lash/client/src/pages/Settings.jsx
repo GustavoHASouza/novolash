@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import ImageCropModal from '../components/ImageCropModal.jsx';
 
 const DIAS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 const NEW = { id: null, name: '', description: '', duration_min: 60, price_cents: 0, image_url: '', active: true };
@@ -7,58 +8,44 @@ const NEW = { id: null, name: '', description: '', duration_min: 60, price_cents
 const DEFAULT_LASH_PHOTO =
   'https://images.unsplash.com/photo-1583001931096-959e9a1a6223?auto=format&fit=crop&w=800&q=80';
 
-/** Redimensiona e comprime uma imagem escolhida pela profissional para salvar leve no banco */
-function compressImageFile(file, maxWidth = 900, quality = 0.82) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(1, maxWidth / img.width);
-        const w = Math.round(img.width * scale);
-        const h = Math.round(img.height * scale);
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', quality));
-      };
-      img.onerror = reject;
-      img.src = ev.target.result;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
 function ServiceRow({ s, onSave }) {
   const [v, setV] = useState({
     ...s,
     image_url: s.image_url || '',
     price: (s.price_cents / 100).toFixed(2),
   });
-  const [uploading, setUploading] = useState(false);
+  const [cropSrc, setCropSrc] = useState(null);
 
   const set = (k) => (e) =>
     setV({ ...v, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
 
-  async function handleFileChange(e) {
+  function handleFileChange(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    setUploading(true);
-    try {
-      const dataUrl = await compressImageFile(file);
-      setV((prev) => ({ ...prev, image_url: dataUrl }));
-    } catch {
-      alert('Não foi possível processar a imagem selecionada.');
-    } finally {
-      setUploading(false);
-    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setCropSrc(ev.target.result);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
   }
 
   return (
     <div className="settings-service">
+      {cropSrc && (
+        <ImageCropModal
+          src={cropSrc}
+          aspect={16 / 10}
+          outputWidth={960}
+          title={`Ajustar foto do procedimento${v.name ? `: ${v.name}` : ''}`}
+          onCancel={() => setCropSrc(null)}
+          onConfirm={(croppedDataUrl) => {
+            setV((prev) => ({ ...prev, image_url: croppedDataUrl }));
+            setCropSrc(null);
+          }}
+        />
+      )}
+
       <div className="settings-service-layout">
         <div className="settings-photo-box">
           <div className="settings-photo-preview">
@@ -72,7 +59,7 @@ function ServiceRow({ s, onSave }) {
             />
           </div>
           <label className="upload-photo-btn">
-            {uploading ? 'Carregando...' : 'Enviar foto do aparelho'}
+            Enviar e ajustar foto
             <input
               type="file"
               accept="image/*"
@@ -81,14 +68,24 @@ function ServiceRow({ s, onSave }) {
             />
           </label>
           {v.image_url && (
-            <button
-              type="button"
-              className="ghost sm"
-              style={{ width: '100%', marginTop: 4 }}
-              onClick={() => setV({ ...v, image_url: '' })}
-            >
-              Remover foto
-            </button>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                type="button"
+                className="ghost sm"
+                style={{ flex: 1 }}
+                onClick={() => setCropSrc(v.image_url)}
+              >
+                Ajustar
+              </button>
+              <button
+                type="button"
+                className="ghost sm"
+                style={{ flex: 1 }}
+                onClick={() => setV({ ...v, image_url: '' })}
+              >
+                Remover
+              </button>
+            </div>
           )}
         </div>
 
@@ -113,11 +110,11 @@ function ServiceRow({ s, onSave }) {
           </div>
 
           <label style={{ marginTop: 4 }}>
-            Link da foto da modelo (ou envie do aparelho ao lado)
+            Link da foto da modelo (ou envie e ajuste no botão ao lado)
             <input
               value={v.image_url.startsWith('data:') ? '' : v.image_url}
               onChange={set('image_url')}
-              placeholder={v.image_url.startsWith('data:') ? 'Foto enviada do aparelho (clique em Salvar)' : 'https://...'}
+              placeholder={v.image_url.startsWith('data:') ? 'Foto ajustada pronta (clique em Salvar alterações)' : 'https://...'}
             />
           </label>
 
@@ -169,11 +166,11 @@ export default function Settings() {
       <div className="card">
         <h2>Catálogo de Serviços e Modelos</h2>
         <p className="muted" style={{ marginBottom: 16 }}>
-          Gerencie os procedimentos, valores, durações e fotos de modelos exibidas na página de agendamento.
+          Gerencie os procedimentos, valores, durações e ajuste o enquadramento exato das fotos exibidas no agendamento.
         </p>
         {services.map((s) => (
           <ServiceRow
-            key={s.id + '-' + s.name + s.price_cents + s.active + (s.image_url || '').slice(0, 30)}
+            key={s.id + '-' + s.name + s.price_cents + s.active + (s.image_url || '').slice(-20)}
             s={s}
             onSave={saveService}
           />

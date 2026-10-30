@@ -1,6 +1,16 @@
+import { createContext, useContext } from 'react';
+
 const BASE = import.meta.env.VITE_API_URL || 'https://viyxasteqzqhcfxfzywx.supabase.co/functions/v1';
 export const TZ = 'America/Sao_Paulo';
 export const STUDIO = import.meta.env.VITE_STUDIO_NAME || 'Novolash Studio';
+
+export const StudioContext = createContext({
+  studioName: STUDIO,
+  avatarUrl: '',
+  setStudioSettings: () => {},
+});
+
+export const useStudio = () => useContext(StudioContext);
 
 export const money = (cents) =>
   (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -24,6 +34,7 @@ async function req(path, { method = 'GET', body, auth = false } = {}) {
 }
 
 export const api = {
+  settings: () => req('/settings'),
   services: () => req('/services'),
   slots: (date, serviceId) => req(`/availability?date=${date}&serviceId=${serviceId}`),
   book: (body) => req('/appointments', { method: 'POST', body }),

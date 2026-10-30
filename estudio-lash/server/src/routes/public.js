@@ -7,6 +7,11 @@ const r = Router();
 
 r.post('/auth/login', login);
 
+r.get('/settings', async (_req, res) => {
+  const { rows: [st] } = await q('SELECT studio_name, avatar_url FROM studio_settings WHERE id = 1');
+  res.json(st || { studio_name: 'Novolash Studio', avatar_url: '' });
+});
+
 r.get('/services', async (_req, res) => {
   const { rows } = await q(
     'SELECT id, name, description, duration_min, price_cents, image_url FROM services WHERE active ORDER BY price_cents DESC');

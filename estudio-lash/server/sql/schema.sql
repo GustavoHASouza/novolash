@@ -45,6 +45,39 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (occurred_on);
 
+CREATE TABLE IF NOT EXISTS studio_settings (
+  id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  studio_name TEXT NOT NULL DEFAULT 'Novolash Studio',
+  avatar_url TEXT NOT NULL DEFAULT '',
+  password_hash TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO studio_settings (id, studio_name, avatar_url)
+VALUES (1, 'Novolash Studio', '')
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS inventory_items (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  quantity INT NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+  unit TEXT NOT NULL DEFAULT 'un',
+  last_cost_cents INT NOT NULL DEFAULT 0 CHECK (last_cost_cents >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS inventory_movements (
+  id SERIAL PRIMARY KEY,
+  item_id INT NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+  delta INT NOT NULL,
+  cost_cents INT NOT NULL DEFAULT 0 CHECK (cost_cents >= 0),
+  notes TEXT NOT NULL DEFAULT '',
+  transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL,
+  occurred_on DATE NOT NULL DEFAULT CURRENT_DATE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 INSERT INTO business_hours (weekday, is_open, open_time, close_time) VALUES
   (0,false,'09:00','18:00'),(1,true,'09:00','18:00'),(2,true,'09:00','18:00'),
   (3,true,'09:00','18:00'),(4,true,'09:00','18:00'),(5,true,'09:00','18:00'),

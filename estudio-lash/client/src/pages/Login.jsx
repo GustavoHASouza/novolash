@@ -1,8 +1,15 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, STUDIO } from '../api.js';
+import { api, useStudio } from '../api.js';
+
+function getInitials(name) {
+  const parts = String(name || 'NL').trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return (parts[0]?.slice(0, 2) || 'NL').toUpperCase();
+}
 
 export default function Login({ onLogin }) {
+  const { studioName, avatarUrl } = useStudio();
   const [f, setF] = useState({ email: '', password: '' });
   const [err, setErr] = useState('');
 
@@ -20,9 +27,13 @@ export default function Login({ onLogin }) {
     <div className="login-page">
       <div className="login-card">
         <div className="login-header">
-          <span className="header-monogram lg">NL</span>
+          {avatarUrl ? (
+            <img src={avatarUrl} alt={studioName} className="login-avatar" />
+          ) : (
+            <span className="header-monogram lg">{getInitials(studioName)}</span>
+          )}
           <h2>Painel da Profissional</h2>
-          <p>{STUDIO}</p>
+          <p>{studioName}</p>
         </div>
         {err && <div className="msg err">{err}</div>}
         <form onSubmit={submit}>

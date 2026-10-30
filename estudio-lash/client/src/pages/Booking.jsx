@@ -8,13 +8,14 @@ const DEFAULT_LASH_PHOTO =
   'https://images.unsplash.com/photo-1583001931096-959e9a1a6223?auto=format&fit=crop&w=800&q=80';
 
 const STEPS = [
-  { num: 1, label: 'Modelo' },
+  { num: 1, label: 'Procedimento' },
   { num: 2, label: 'Data e Horário' },
   { num: 3, label: 'Seus Dados' },
 ];
 
 export default function Booking() {
   const [services, setServices] = useState([]);
+  const [search, setSearch] = useState('');
   const [svc, setSvc] = useState(null);
   const [step, setStep] = useState(1);
   const [date, setDate] = useState(today());
@@ -90,6 +91,15 @@ export default function Booking() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
+  const filteredServices = services.filter((s) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      s.name?.toLowerCase().includes(q) ||
+      s.description?.toLowerCase().includes(q)
+    );
+  });
+
   if (msg?.ok) {
     return (
       <div className="wrap">
@@ -154,42 +164,83 @@ export default function Booking() {
             </div>
           </div>
 
-          <div className="catalog-grid">
-            {services.map((s) => (
-              <article
-                key={s.id}
-                className={`catalog-card ${svc?.id === s.id ? 'selected' : ''}`}
-                onClick={() => handleSelectService(s)}
+          {/* Caixa de Pesquisa com Lupinha */}
+          <div className="service-search-wrap">
+            <svg
+              className="service-search-icon"
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              type="search"
+              className="service-search-input"
+              placeholder="Pesquisar Serviço"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {search && (
+              <button
+                type="button"
+                className="service-search-clear"
+                onClick={() => setSearch('')}
+                aria-label="Limpar busca"
               >
-                <div className="catalog-image-wrap">
-                  <img
-                    src={s.image_url || DEFAULT_LASH_PHOTO}
-                    alt={s.name}
-                    className="catalog-image"
-                    loading="lazy"
-                    onError={(e) => {
-                      e.currentTarget.onerror = null;
-                      e.currentTarget.src = DEFAULT_LASH_PHOTO;
-                    }}
-                  />
-                  <span className="catalog-duration-tag">{s.duration_min} min</span>
-                </div>
-                <div className="catalog-body">
-                  <h3 className="catalog-title">{s.name}</h3>
-                  <p className="catalog-desc">{s.description}</p>
-                  <div className="catalog-footer">
-                    <span className="catalog-price">{money(s.price_cents)}</span>
-                    <span className="catalog-cta">
-                      Selecionar
-                      <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M5 10h10M11 6l4 4-4 4" />
-                      </svg>
-                    </span>
-                  </div>
-                </div>
-              </article>
-            ))}
+                Limpar
+              </button>
+            )}
           </div>
+
+          {filteredServices.length === 0 ? (
+            <div className="card" style={{ textAlign: 'center', padding: '36px 20px' }}>
+              <p className="muted">Nenhum procedimento encontrado para "{search}".</p>
+            </div>
+          ) : (
+            <div className="catalog-grid">
+              {filteredServices.map((s) => (
+                <article
+                  key={s.id}
+                  className={`catalog-card ${svc?.id === s.id ? 'selected' : ''}`}
+                  onClick={() => handleSelectService(s)}
+                >
+                  <div className="catalog-image-wrap">
+                    <img
+                      src={s.image_url || DEFAULT_LASH_PHOTO}
+                      alt={s.name}
+                      className="catalog-image"
+                      loading="lazy"
+                      onError={(e) => {
+                        e.currentTarget.onerror = null;
+                        e.currentTarget.src = DEFAULT_LASH_PHOTO;
+                      }}
+                    />
+                    <span className="catalog-duration-tag">{s.duration_min} min</span>
+                  </div>
+                  <div className="catalog-body">
+                    <h3 className="catalog-title">{s.name}</h3>
+                    <p className="catalog-desc">{s.description}</p>
+                    <div className="catalog-footer">
+                      <span className="catalog-price">{money(s.price_cents)}</span>
+                      <span className="catalog-cta">
+                        Selecionar
+                        <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5 10h10M11 6l4 4-4 4" />
+                        </svg>
+                      </span>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -201,7 +252,7 @@ export default function Booking() {
               <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M15 10H5M9 14l-4-4 4-4" />
               </svg>
-              Voltar para modelos
+              Voltar para procedimentos
             </button>
           </div>
 
