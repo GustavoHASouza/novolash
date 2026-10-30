@@ -43,19 +43,34 @@ export default function Finance() {
   return (
     <>
       {err && <div className="msg err">{err}</div>}
-      <label style={{ maxWidth: 200 }}>Mês<input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} /></label>
+
+      <div className="finance-month">
+        <label>
+          📊 Mês de referência
+          <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} />
+        </label>
+      </div>
 
       {sum && (
         <div className="stats">
-          <div className="stat"><span className="muted">Receitas</span><b className="pos">{money(sum.receita)}</b></div>
-          <div className="stat"><span className="muted">Despesas</span><b className="neg">{money(sum.despesa)}</b></div>
-          <div className="stat"><span className="muted">Saldo do mês</span><b className={sum.saldo >= 0 ? 'pos' : 'neg'}>{money(sum.saldo)}</b></div>
+          <div className="stat">
+            <span className="muted">💚 Receitas</span>
+            <b className="pos">{money(sum.receita)}</b>
+          </div>
+          <div className="stat">
+            <span className="muted">🔴 Despesas</span>
+            <b className="neg">{money(sum.despesa)}</b>
+          </div>
+          <div className="stat">
+            <span className="muted">📊 Saldo do Mês</span>
+            <b className={sum.saldo >= 0 ? 'pos' : 'neg'}>{money(sum.saldo)}</b>
+          </div>
         </div>
       )}
 
       {sum?.categorias.length > 0 && (
         <div className="card">
-          <h3>Por categoria</h3>
+          <h3>📂 Por Categoria</h3>
           <table><tbody>
             {sum.categorias.map((c) => (
               <tr key={c.type + c.category}>
@@ -69,8 +84,10 @@ export default function Finance() {
       )}
 
       <form className="card" onSubmit={add}>
-        <h3>Novo lançamento</h3>
-        <p className="muted">Atendimentos marcados como “Concluído” na agenda entram como receita automaticamente.</p>
+        <h3>➕ Novo Lançamento</h3>
+        <p className="muted" style={{ marginBottom: 16 }}>
+          Atendimentos marcados como "Concluído" na agenda entram como receita automaticamente.
+        </p>
         <div className="grid">
           <label>Tipo
             <select value={f.type} onChange={(e) => setF({ ...f, type: e.target.value })}>
@@ -78,32 +95,36 @@ export default function Finance() {
               <option value="receita">Receita</option>
             </select>
           </label>
-          <label>Descrição<input required value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></label>
+          <label>Descrição<input required placeholder="Descrição do lançamento" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></label>
           <label>Categoria
-            <input list="cats" value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} />
+            <input list="cats" placeholder="Selecione ou digite" value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} />
             <datalist id="cats">{CATS.map((c) => <option key={c} value={c} />)}</datalist>
           </label>
-          <label>Valor (R$)<input required type="number" step="0.01" min="0.01" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></label>
+          <label>Valor (R$)<input required type="number" step="0.01" min="0.01" placeholder="0.00" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></label>
           <label>Data<input required type="date" value={f.occurred_on} onChange={(e) => setF({ ...f, occurred_on: e.target.value })} /></label>
         </div>
-        <button>Adicionar</button>
+        <button style={{ marginTop: 12 }}>Adicionar</button>
       </form>
 
       <div className="card">
-        <h3>Lançamentos</h3>
+        <h3>📋 Lançamentos</h3>
         {rows.length === 0 && <p className="muted">Nenhum lançamento neste mês.</p>}
-        <table><tbody>
-          {rows.map((t) => (
-            <tr key={t.id}>
-              <td>{t.occurred_on.split('-').reverse().slice(0, 2).join('/')}</td>
-              <td>{t.description}<div className="muted">{t.category}</div></td>
-              <td style={{ textAlign: 'right' }} className={t.type === 'receita' ? 'pos' : 'neg'}>
-                {t.type === 'receita' ? '+' : '−'}{money(t.amount_cents)}
-              </td>
-              <td><button className="ghost sm" onClick={() => remove(t.id)}>×</button></td>
-            </tr>
-          ))}
-        </tbody></table>
+        {rows.length > 0 && (
+          <table><tbody>
+            {rows.map((t) => (
+              <tr key={t.id}>
+                <td style={{ whiteSpace: 'nowrap' }}>{t.occurred_on.split('-').reverse().slice(0, 2).join('/')}</td>
+                <td>{t.description}<div className="muted">{t.category}</div></td>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }} className={t.type === 'receita' ? 'pos' : 'neg'}>
+                  {t.type === 'receita' ? '+' : '−'}{money(t.amount_cents)}
+                </td>
+                <td style={{ width: 40, textAlign: 'center' }}>
+                  <button className="ghost sm" onClick={() => remove(t.id)} title="Excluir">×</button>
+                </td>
+              </tr>
+            ))}
+          </tbody></table>
+        )}
       </div>
     </>
   );

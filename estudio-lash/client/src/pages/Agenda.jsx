@@ -58,17 +58,21 @@ export default function Agenda() {
   return (
     <>
       {err && <div className="msg err">{err}</div>}
-      <div className="row between" style={{ marginBottom: 12 }}>
-        <div className="row">
+
+      <div className="agenda-nav">
+        <div className="agenda-nav-week">
           <button className="ghost sm" onClick={() => setStart(addDays(start, -7))}>← Semana</button>
           <button className="ghost sm" onClick={() => setStart(today())}>Hoje</button>
           <button className="ghost sm" onClick={() => setStart(addDays(start, 7))}>Semana →</button>
         </div>
-        <button className="sm" onClick={() => setOpen(!open)}>+ Novo agendamento</button>
+        <button className="sm" onClick={() => setOpen(!open)}>
+          {open ? '✕ Fechar' : '+ Novo agendamento'}
+        </button>
       </div>
 
       {open && (
-        <form className="card" onSubmit={create}>
+        <form className="card" onSubmit={create} style={{ animationDelay: '0s' }}>
+          <h3>📋 Novo Agendamento Manual</h3>
           <div className="grid">
             <label>Serviço
               <select required value={f.serviceId} onChange={(e) => setF({ ...f, serviceId: e.target.value })}>
@@ -78,35 +82,35 @@ export default function Agenda() {
             </label>
             <label>Data<input type="date" required value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></label>
             <label>Hora<input type="time" required value={f.time} onChange={(e) => setF({ ...f, time: e.target.value })} /></label>
-            <label>Cliente<input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
-            <label>Telefone<input required value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} /></label>
+            <label>Cliente<input required placeholder="Nome do cliente" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
+            <label>Telefone<input required placeholder="(00) 00000-0000" value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} /></label>
           </div>
-          <button>Salvar</button>
+          <button style={{ marginTop: 12 }}>Salvar</button>
         </form>
       )}
 
-      {days.map((d) => {
+      {days.map((d, idx) => {
         const list = items.filter((a) => dayKey(a.starts_at) === d);
         return (
-          <div className="card" key={d}>
-            <h3 style={{ textTransform: 'capitalize' }}>{dayLabel(d)}</h3>
+          <div className="card day-card" key={d} style={{ animationDelay: `${idx * 0.04}s` }}>
+            <h3>📅 {dayLabel(d)}</h3>
             {list.length === 0 && <p className="muted">Sem atendimentos.</p>}
             {list.map((a) => (
               <div className="appt" key={a.id}>
-                <div className="row between">
-                  <b>{hhmm(a.starts_at)}–{hhmm(a.ends_at)} · {a.client_name}</b>
+                <div className="appt-header">
+                  <span className="appt-time">{hhmm(a.starts_at)}–{hhmm(a.ends_at)} · {a.client_name}</span>
                   <span className={`badge ${a.status}`}>{STATUS[a.status]}</span>
                 </div>
-                <div className="muted">
+                <div className="appt-details">
                   {a.service} · {money(a.price_cents)} ·{' '}
-                  <a href={wa(a.client_phone)} target="_blank" rel="noreferrer">{a.client_phone}</a>
-                  {a.notes && <> · “{a.notes}”</>}
+                  <a href={wa(a.client_phone)} target="_blank" rel="noreferrer">📱 {a.client_phone}</a>
+                  {a.notes && <> · "{a.notes}"</>}
                 </div>
-                <div className="row" style={{ marginTop: 6 }}>
-                  {a.status !== 'concluido' && <button className="sm" onClick={() => setStatus(a.id, 'concluido')}>Concluir</button>}
-                  {a.status !== 'faltou' && <button className="ghost sm" onClick={() => setStatus(a.id, 'faltou')}>Faltou</button>}
-                  {a.status !== 'cancelado' && <button className="ghost sm" onClick={() => setStatus(a.id, 'cancelado')}>Cancelar</button>}
-                  {a.status !== 'agendado' && <button className="ghost sm" onClick={() => setStatus(a.id, 'agendado')}>Reagendar (voltar p/ agendado)</button>}
+                <div className="appt-actions">
+                  {a.status !== 'concluido' && <button className="sm" onClick={() => setStatus(a.id, 'concluido')}>✅ Concluir</button>}
+                  {a.status !== 'faltou' && <button className="ghost sm" onClick={() => setStatus(a.id, 'faltou')}>⚠️ Faltou</button>}
+                  {a.status !== 'cancelado' && <button className="ghost sm" onClick={() => setStatus(a.id, 'cancelado')}>❌ Cancelar</button>}
+                  {a.status !== 'agendado' && <button className="ghost sm" onClick={() => setStatus(a.id, 'agendado')}>🔄 Reagendar</button>}
                 </div>
               </div>
             ))}

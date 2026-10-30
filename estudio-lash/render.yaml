@@ -1,33 +1,34 @@
-# Blueprint do Render: cria o banco PostgreSQL e a API Node.js
+# Render Blueprint — Deploy com um clique
+# https://render.com/docs/blueprint-spec
 databases:
-  - name: estudio-db
+  - name: novolash-db
     plan: free
-    databaseName: estudio
-    user: estudio
+    databaseName: novolash
+    user: novolash
 
 services:
   - type: web
-    name: estudio-api
+    name: novolash-api
     runtime: node
     plan: free
-    rootDir: server
+    rootDir: estudio-lash/server
     buildCommand: npm install
     startCommand: npm run migrate && npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
-        value: 20
+        value: "20"
       - key: DATABASE_URL
         fromDatabase:
-          name: estudio-db
+          name: novolash-db
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
       - key: ADMIN_EMAIL
-        sync: false
+        sync: false   # Defina no dashboard: seu email de admin
       - key: ADMIN_PASSWORD
-        sync: false
+        sync: false   # Defina no dashboard: sua senha de admin
       - key: CORS_ORIGIN
-        sync: false   # URL do front na Vercel, ex.: https://meu-estudio.vercel.app
+        sync: false   # URL do front na Vercel, ex.: https://novolash.vercel.app
       - key: STUDIO_UTC_OFFSET
         value: "-03:00"

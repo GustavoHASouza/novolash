@@ -1,6 +1,6 @@
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const BASE = import.meta.env.VITE_API_URL ?? (window.location.hostname === 'localhost' ? 'http://localhost:3001' : '');
 export const TZ = 'America/Sao_Paulo';
-export const STUDIO = import.meta.env.VITE_STUDIO_NAME || 'Studio Lash & Brow';
+export const STUDIO = import.meta.env.VITE_STUDIO_NAME || 'Novolash Studio';
 
 export const money = (cents) =>
   (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
