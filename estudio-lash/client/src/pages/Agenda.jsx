@@ -153,7 +153,7 @@ export default function Agenda() {
               className="ghost sm"
               onClick={() => setCurrentMonth(shiftMonth(currentMonth, -1))}
             >
-              Mês anterior
+              Anterior
             </button>
             <button
               type="button"
@@ -171,14 +171,14 @@ export default function Agenda() {
               className="ghost sm"
               onClick={() => setCurrentMonth(shiftMonth(currentMonth, 1))}
             >
-              Próximo mês
+              Próximo
             </button>
           </div>
         </div>
 
         <button
           type="button"
-          className="sm"
+          className="sm calendar-new-btn"
           onClick={() => {
             setF((prev) => ({ ...prev, date: selectedDate || today() }));
             setOpenForm(!openForm);
@@ -238,6 +238,7 @@ export default function Agenda() {
               Telefone / WhatsApp
               <input
                 required
+                type="tel"
                 placeholder="(00) 00000-0000"
                 value={f.phone}
                 onChange={(e) => setF({ ...f, phone: e.target.value })}
@@ -258,7 +259,7 @@ export default function Agenda() {
         </form>
       )}
 
-      {/* VISÃO 1: CALENDÁRIO MENSAL (estilo Google Agenda) */}
+      {/* VISÃO 1: CALENDÁRIO MENSAL COM COLUNAS 100% UNIFORMES */}
       {!selectedDate && (
         <div className="card calendar-card">
           <div className="calendar-weekdays">
@@ -291,22 +292,25 @@ export default function Agenda() {
                   <div className="calendar-day-top">
                     <span className="calendar-day-number">{dayNum}</span>
                     {activeCount > 0 && (
-                      <span className="calendar-day-count">
-                        {activeCount} {activeCount === 1 ? 'horário' : 'horários'}
+                      <span className="calendar-day-count" title={`${activeCount} agendamentos`}>
+                        <span className="calendar-count-num">{activeCount}</span>
+                        <span className="calendar-count-label">
+                          {activeCount === 1 ? ' horário' : ' horários'}
+                        </span>
                       </span>
                     )}
                   </div>
 
                   <div className="calendar-day-events">
-                    {dayAppts.slice(0, 3).map((a) => (
+                    {dayAppts.slice(0, 2).map((a) => (
                       <div key={a.id} className={`calendar-event-pill ${a.status}`}>
                         <span className="calendar-event-time">{hhmm(a.starts_at)}</span>
                         <span className="calendar-event-name">{a.client_name}</span>
                       </div>
                     ))}
-                    {dayAppts.length > 3 && (
+                    {dayAppts.length > 2 && (
                       <div className="calendar-event-more">
-                        + {dayAppts.length - 3} mais
+                        +{dayAppts.length - 2}
                       </div>
                     )}
                   </div>

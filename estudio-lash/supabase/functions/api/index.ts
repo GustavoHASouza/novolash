@@ -5,7 +5,6 @@ const pool = new pg.Pool({ connectionString: Deno.env.get("SUPABASE_DB_URL") });
 const q = (text: string, params?: unknown[]) => pool.query(text, params);
 
 const OFFSET = "-03:00";
-const STEP_MIN = 30;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -63,25 +62,76 @@ async function checkPassword(password: string) {
   return sameBytes(await derive(password, unb64(salt), Number(iter)), unb64(hash));
 }
 
-/* ---------- Agenda ---------- */
-async function slotsFor(date: string, durationMin: number) {
+/* ---------- Agenda & Horários ---------- */
+async function getSlotIntervalMin(): Promise<number> {
+  const { rows: [st] } = await q(
+    "SELECT slot_interval_min FROM public.studio_settings WHERE id = 1"
+  );
+  const val = Number(st?.slot_interval_min);
+  return val >= 15 && val <= 240 ? val : 30;
+}
+
+async function slotsFor(date: string, _durationMin?: number) {
   const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
-  const { rows: [h] } = await q(
-    `SELECT is_open, to_char(open_time,'HH24:MI') AS open_time, to_char(close_time,'HH24:MI') AS close_time
-     FROM public.business_hours WHERE weekday = $1`, [weekday]);
+  const [hoursRes, stepMin] = await Promise.all([
+    q(
+      `SELECT is_open,
+              to_char(open_time,'HH24:MI') AS open_time,
+              to_char(close_time,'HH24:MI') AS close_time,
+              has_break,
+              to_char(break_start,'HH24:MI') AS break_start,
+              to_char(break_end,'HH24:MI') AS break_end
+       FROM public.business_hours WHERE weekday = $1`,
+      [weekday]
+    ),
+    getSlotIntervalMin(),
+  ]);
+  const h = hoursRes.rows[0];
   if (!h?.is_open) return [];
+
+  const openMin = toMin(h.open_time);
+  const closeMin = toMin(h.close_time);
+  const hasBreak = Boolean(h.has_break && h.break_start && h.break_end && toMin(h.break_end) > toMin(h.break_start));
+  const breakStartMin = hasBreak ? toMin(h.break_start) : -1;
+  const breakEndMin = hasBreak ? toMin(h.break_end) : -1;
+
+  // Gera os horários candidatos respeitando o intervalo configurado pela profissional e o horário de almoço
+  const candidates: number[] = [];
+  if (hasBreak && breakStartMin > openMin && breakEndMin < closeMin) {
+    for (let m = openMin; m < breakStartMin && m < closeMin; m += stepMin) {
+      candidates.push(m);
+    }
+    for (let m = breakEndMin; m < closeMin; m += stepMin) {
+      candidates.push(m);
+    }
+  } else {
+    for (let m = openMin; m < closeMin; m += stepMin) {
+      if (hasBreak && m >= breakStartMin && m < breakEndMin) continue;
+      candidates.push(m);
+    }
+  }
 
   const dayStart = toInstant(date, "00:00");
   const dayEnd = new Date(dayStart.getTime() + 86400000);
   const { rows: busy } = await q(
     `SELECT starts_at, ends_at FROM public.appointments
-     WHERE status = 'agendado' AND starts_at < $2 AND ends_at > $1`, [dayStart, dayEnd]);
+     WHERE status = 'agendado' AND starts_at < $2 AND ends_at > $1`,
+    [dayStart, dayEnd]
+  );
 
   const now = new Date();
   const out: string[] = [];
-  for (let m = toMin(h.open_time); m + durationMin <= toMin(h.close_time); m += STEP_MIN) {
+  for (const m of candidates) {
+    let endMin = m + stepMin;
+    if (hasBreak && m < breakStartMin && endMin > breakStartMin) {
+      endMin = breakStartMin;
+    }
+    if (endMin > closeMin) {
+      endMin = closeMin;
+    }
+    const blockMin = Math.max(15, endMin - m);
     const s = toInstant(date, fmt(m));
-    const e = new Date(s.getTime() + durationMin * 60000);
+    const e = new Date(s.getTime() + blockMin * 60000);
     if (s <= now) continue;
     if (busy.some((b: any) => s < new Date(b.ends_at) && e > new Date(b.starts_at))) continue;
     out.push(fmt(m));
@@ -104,7 +154,32 @@ async function book(b: any, { force = false } = {}): Promise<[number, unknown]> 
   if (!force && !(await slotsFor(date, svc.duration_min)).includes(time)) {
     return [409, { error: "Este horário não está mais disponível" }];
   }
-  const end = new Date(start.getTime() + svc.duration_min * 60000);
+
+  const stepMin = await getSlotIntervalMin();
+  const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+  const { rows: [h] } = await q(
+    `SELECT to_char(close_time,'HH24:MI') AS close_time,
+            has_break,
+            to_char(break_start,'HH24:MI') AS break_start
+     FROM public.business_hours WHERE weekday = $1`,
+    [weekday]
+  );
+
+  const startMin = toMin(time);
+  let endMin = startMin + stepMin;
+  if (!force && h) {
+    const breakStartMin = h.has_break && h.break_start ? toMin(h.break_start) : -1;
+    const closeMin = h.close_time ? toMin(h.close_time) : 1440;
+    if (breakStartMin > 0 && startMin < breakStartMin && endMin > breakStartMin) {
+      endMin = breakStartMin;
+    }
+    if (endMin > closeMin) {
+      endMin = closeMin;
+    }
+  }
+  const blockMin = Math.max(15, endMin - startMin);
+  const end = new Date(start.getTime() + blockMin * 60000);
+
   try {
     const { rows: [a] } = await q(
       `INSERT INTO public.appointments (service_id, client_name, client_phone, client_email, notes, starts_at, ends_at)
@@ -164,8 +239,8 @@ Deno.serve(async (req: Request) => {
 
     if (path === "/settings" && method === "GET") {
       const { rows: [s] } = await q(
-        "SELECT studio_name, avatar_url FROM public.studio_settings WHERE id = 1");
-      return json(s || { studio_name: "Novolash Studio", avatar_url: "" });
+        "SELECT studio_name, avatar_url, slot_interval_min FROM public.studio_settings WHERE id = 1");
+      return json(s || { studio_name: "Novolash Studio", avatar_url: "", slot_interval_min: 30 });
     }
 
     if (path === "/auth/login" && method === "POST") {
@@ -213,7 +288,7 @@ Deno.serve(async (req: Request) => {
     // Conta
     if (sub === "/settings" && method === "GET") {
       const { rows: [s] } = await q(
-        "SELECT studio_name, avatar_url FROM public.studio_settings WHERE id = 1");
+        "SELECT studio_name, avatar_url, slot_interval_min FROM public.studio_settings WHERE id = 1");
       return json({ ...s, email: ADMIN_EMAIL });
     }
 
@@ -223,7 +298,7 @@ Deno.serve(async (req: Request) => {
       const avatar = String(body.avatar_url || "");
       const { rows: [s] } = await q(
         `UPDATE public.studio_settings SET studio_name = $1, avatar_url = $2, updated_at = now()
-         WHERE id = 1 RETURNING studio_name, avatar_url`, [name, avatar]);
+         WHERE id = 1 RETURNING studio_name, avatar_url, slot_interval_min`, [name, avatar]);
       return json(s);
     }
 
@@ -314,26 +389,78 @@ Deno.serve(async (req: Request) => {
       return json(s);
     }
 
-    // Horários
+    // Horários de funcionamento + intervalo de almoço + intervalo de agendamento
     if (sub === "/hours" && method === "GET") {
-      const { rows } = await q(
-        `SELECT weekday, is_open, to_char(open_time,'HH24:MI') AS open_time,
-                to_char(close_time,'HH24:MI') AS close_time
-         FROM public.business_hours ORDER BY weekday`);
-      return json(rows);
+      const [hoursRes, intervalMin] = await Promise.all([
+        q(
+          `SELECT weekday, is_open,
+                  to_char(open_time,'HH24:MI') AS open_time,
+                  to_char(close_time,'HH24:MI') AS close_time,
+                  has_break,
+                  to_char(break_start,'HH24:MI') AS break_start,
+                  to_char(break_end,'HH24:MI') AS break_end
+           FROM public.business_hours ORDER BY weekday`
+        ),
+        getSlotIntervalMin(),
+      ]);
+      return json(
+        hoursRes.rows.map((r: any) => ({
+          ...r,
+          slot_interval_min: intervalMin,
+        }))
+      );
     }
 
     if (sub === "/hours" && method === "PUT") {
-      const list = body;
-      const valid = Array.isArray(list) && list.length === 7 && list.every((h: any) =>
-        Number.isInteger(h.weekday) && TIME.test(h.open_time) && TIME.test(h.close_time) &&
-        h.close_time > h.open_time);
-      if (!valid) return bad("Horários inválidos");
+      const list = Array.isArray(body) ? body : body?.hours;
+      const rawInterval = Number(
+        (Array.isArray(body) ? body[0]?.slot_interval_min : body?.slot_interval_min) ?? 30
+      );
+      const intervalMin = rawInterval >= 15 && rawInterval <= 240 ? Math.round(rawInterval) : 30;
+
+      const valid =
+        Array.isArray(list) &&
+        list.length === 7 &&
+        list.every((h: any) => {
+          const basicOk =
+            Number.isInteger(h.weekday) &&
+            TIME.test(h.open_time || "") &&
+            TIME.test(h.close_time || "") &&
+            h.close_time > h.open_time;
+          if (!basicOk) return false;
+          if (h.has_break) {
+            return (
+              TIME.test(h.break_start || "") &&
+              TIME.test(h.break_end || "") &&
+              h.break_end > h.break_start
+            );
+          }
+          return true;
+        });
+
+      if (!valid) return bad("Verifique os horários de abertura, fechamento e intervalo de almoço");
+
+      await q(
+        "UPDATE public.studio_settings SET slot_interval_min = $1, updated_at = now() WHERE id = 1",
+        [intervalMin]
+      );
+
       for (const h of list) {
-        await q("UPDATE public.business_hours SET is_open=$2, open_time=$3, close_time=$4 WHERE weekday=$1",
-          [h.weekday, !!h.is_open, h.open_time, h.close_time]);
+        const bStart = TIME.test(h.break_start || "") ? h.break_start : "12:00";
+        const bEnd = TIME.test(h.break_end || "") ? h.break_end : "13:00";
+        await q(
+          `UPDATE public.business_hours
+           SET is_open = $2,
+               open_time = $3,
+               close_time = $4,
+               has_break = $5,
+               break_start = $6,
+               break_end = $7
+           WHERE weekday = $1`,
+          [h.weekday, !!h.is_open, h.open_time, h.close_time, !!h.has_break, bStart, bEnd]
+        );
       }
-      return json({ ok: true });
+      return json({ ok: true, slot_interval_min: intervalMin });
     }
 
     // Financeiro

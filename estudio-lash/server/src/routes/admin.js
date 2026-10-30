@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
 import { checkAdminPassword, hashPassword, requireAuth } from '../auth.js';
-import { book, localDate, toInstant } from '../slots.js';
+import { book, getSlotIntervalMin, localDate, toInstant } from '../slots.js';
 
 const r = Router();
 r.use(requireAuth);
@@ -139,23 +139,62 @@ r.put('/services/:id', async (req, res) => {
 
 /* ---------- Horário de funcionamento ---------- */
 r.get('/hours', async (_req, res) => {
-  const { rows } = await q(
-    `SELECT weekday, is_open, to_char(open_time,'HH24:MI') AS open_time,
-            to_char(close_time,'HH24:MI') AS close_time
-     FROM business_hours ORDER BY weekday`);
-  res.json(rows);
+  const [hoursRes, intervalMin] = await Promise.all([
+    q(
+      `SELECT weekday, is_open, to_char(open_time,'HH24:MI') AS open_time,
+              to_char(close_time,'HH24:MI') AS close_time,
+              has_break,
+              to_char(break_start,'HH24:MI') AS break_start,
+              to_char(break_end,'HH24:MI') AS break_end
+       FROM business_hours ORDER BY weekday`
+    ),
+    getSlotIntervalMin(),
+  ]);
+  res.json(hoursRes.rows.map((row) => ({ ...row, slot_interval_min: intervalMin })));
 });
 
 r.put('/hours', async (req, res) => {
-  const list = req.body;
-  const valid = Array.isArray(list) && list.length === 7 && list.every((h) =>
-    Number.isInteger(h.weekday) && TIME.test(h.open_time) && TIME.test(h.close_time) && h.close_time > h.open_time);
-  if (!valid) return bad(res, 'Horários inválidos');
+  const body = req.body;
+  const list = Array.isArray(body) ? body : body?.hours;
+  const rawInterval = Number(
+    (Array.isArray(body) ? body[0]?.slot_interval_min : body?.slot_interval_min) ?? 30
+  );
+  const intervalMin = rawInterval >= 15 && rawInterval <= 240 ? Math.round(rawInterval) : 30;
+
+  const valid =
+    Array.isArray(list) &&
+    list.length === 7 &&
+    list.every((h) => {
+      const basicOk =
+        Number.isInteger(h.weekday) &&
+        TIME.test(h.open_time || '') &&
+        TIME.test(h.close_time || '') &&
+        h.close_time > h.open_time;
+      if (!basicOk) return false;
+      if (h.has_break) {
+        return (
+          TIME.test(h.break_start || '') &&
+          TIME.test(h.break_end || '') &&
+          h.break_end > h.break_start
+        );
+      }
+      return true;
+    });
+  if (!valid) return bad(res, 'Verifique os horários de abertura, fechamento e intervalo de almoço');
+
+  await q('UPDATE studio_settings SET slot_interval_min = $1, updated_at = now() WHERE id = 1', [intervalMin]);
+
   for (const h of list) {
-    await q('UPDATE business_hours SET is_open=$2, open_time=$3, close_time=$4 WHERE weekday=$1',
-      [h.weekday, !!h.is_open, h.open_time, h.close_time]);
+    const bStart = TIME.test(h.break_start || '') ? h.break_start : '12:00';
+    const bEnd = TIME.test(h.break_end || '') ? h.break_end : '13:00';
+    await q(
+      `UPDATE business_hours
+       SET is_open=$2, open_time=$3, close_time=$4, has_break=$5, break_start=$6, break_end=$7
+       WHERE weekday=$1`,
+      [h.weekday, !!h.is_open, h.open_time, h.close_time, !!h.has_break, bStart, bEnd]
+    );
   }
-  res.json({ ok: true });
+  res.json({ ok: true, slot_interval_min: intervalMin });
 });
 
 /* ---------- Financeiro ---------- */

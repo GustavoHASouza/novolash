@@ -1,7 +1,6 @@
 import { q } from './db.js';
 
 const OFFSET = process.env.STUDIO_UTC_OFFSET || '-03:00'; // Brasília
-const STEP_MIN = 30;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -20,24 +19,75 @@ const toMin = (t) => {
 const fmt = (min) =>
   `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
-/** Horários livres (HH:MM) para uma data e duração de serviço. */
-export async function slotsFor(date, durationMin) {
+export async function getSlotIntervalMin() {
+  const { rows: [st] } = await q(
+    'SELECT slot_interval_min FROM studio_settings WHERE id = 1'
+  );
+  const val = Number(st?.slot_interval_min);
+  return val >= 15 && val <= 240 ? val : 30;
+}
+
+/** Horários livres (HH:MM) para uma data, respeitando intervalo de atendimentos e pausa/almoço. */
+export async function slotsFor(date, _durationMin) {
   const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
-  const { rows: [h] } = await q(
-    'SELECT is_open, open_time, close_time FROM business_hours WHERE weekday = $1', [weekday]);
+  const [hoursRes, stepMin] = await Promise.all([
+    q(
+      `SELECT is_open,
+              to_char(open_time,'HH24:MI') AS open_time,
+              to_char(close_time,'HH24:MI') AS close_time,
+              has_break,
+              to_char(break_start,'HH24:MI') AS break_start,
+              to_char(break_end,'HH24:MI') AS break_end
+       FROM business_hours WHERE weekday = $1`,
+      [weekday]
+    ),
+    getSlotIntervalMin(),
+  ]);
+  const h = hoursRes.rows[0];
   if (!h?.is_open) return [];
+
+  const openMin = toMin(h.open_time);
+  const closeMin = toMin(h.close_time);
+  const hasBreak = Boolean(h.has_break && h.break_start && h.break_end && toMin(h.break_end) > toMin(h.break_start));
+  const breakStartMin = hasBreak ? toMin(h.break_start) : -1;
+  const breakEndMin = hasBreak ? toMin(h.break_end) : -1;
+
+  const candidates = [];
+  if (hasBreak && breakStartMin > openMin && breakEndMin < closeMin) {
+    for (let m = openMin; m < breakStartMin && m < closeMin; m += stepMin) {
+      candidates.push(m);
+    }
+    for (let m = breakEndMin; m < closeMin; m += stepMin) {
+      candidates.push(m);
+    }
+  } else {
+    for (let m = openMin; m < closeMin; m += stepMin) {
+      if (hasBreak && m >= breakStartMin && m < breakEndMin) continue;
+      candidates.push(m);
+    }
+  }
 
   const dayStart = toInstant(date, '00:00');
   const dayEnd = new Date(dayStart.getTime() + 86400000);
   const { rows: busy } = await q(
     `SELECT starts_at, ends_at FROM appointments
-     WHERE status = 'agendado' AND starts_at < $2 AND ends_at > $1`, [dayStart, dayEnd]);
+     WHERE status = 'agendado' AND starts_at < $2 AND ends_at > $1`,
+    [dayStart, dayEnd]
+  );
 
   const now = new Date();
   const out = [];
-  for (let m = toMin(h.open_time); m + durationMin <= toMin(h.close_time); m += STEP_MIN) {
+  for (const m of candidates) {
+    let endMin = m + stepMin;
+    if (hasBreak && m < breakStartMin && endMin > breakStartMin) {
+      endMin = breakStartMin;
+    }
+    if (endMin > closeMin) {
+      endMin = closeMin;
+    }
+    const blockMin = Math.max(15, endMin - m);
     const s = toInstant(date, fmt(m));
-    const e = new Date(s.getTime() + durationMin * 60000);
+    const e = new Date(s.getTime() + blockMin * 60000);
     if (s <= now) continue;
     if (busy.some((b) => s < b.ends_at && e > b.starts_at)) continue;
     out.push(fmt(m));
@@ -60,7 +110,32 @@ export async function book(b, { force = false } = {}) {
   if (!force && !(await slotsFor(date, svc.duration_min)).includes(time)) {
     return [409, { error: 'Este horário não está mais disponível' }];
   }
-  const end = new Date(start.getTime() + svc.duration_min * 60000);
+
+  const stepMin = await getSlotIntervalMin();
+  const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+  const { rows: [h] } = await q(
+    `SELECT to_char(close_time,'HH24:MI') AS close_time,
+            has_break,
+            to_char(break_start,'HH24:MI') AS break_start
+     FROM business_hours WHERE weekday = $1`,
+    [weekday]
+  );
+
+  const startMin = toMin(time);
+  let endMin = startMin + stepMin;
+  if (!force && h) {
+    const breakStartMin = h.has_break && h.break_start ? toMin(h.break_start) : -1;
+    const closeMin = h.close_time ? toMin(h.close_time) : 1440;
+    if (breakStartMin > 0 && startMin < breakStartMin && endMin > breakStartMin) {
+      endMin = breakStartMin;
+    }
+    if (endMin > closeMin) {
+      endMin = closeMin;
+    }
+  }
+  const blockMin = Math.max(15, endMin - startMin);
+  const end = new Date(start.getTime() + blockMin * 60000);
+
   try {
     const { rows: [a] } = await q(
       `INSERT INTO appointments (service_id, client_name, client_phone, client_email, notes, starts_at, ends_at)
