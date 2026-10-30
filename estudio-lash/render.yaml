@@ -1,0 +1,33 @@
+# Blueprint do Render: cria o banco PostgreSQL e a API Node.js
+databases:
+  - name: estudio-db
+    plan: free
+    databaseName: estudio
+    user: estudio
+
+services:
+  - type: web
+    name: estudio-api
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm run migrate && npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: DATABASE_URL
+        fromDatabase:
+          name: estudio-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false   # URL do front na Vercel, ex.: https://meu-estudio.vercel.app
+      - key: STUDIO_UTC_OFFSET
+        value: "-03:00"
