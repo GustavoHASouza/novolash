@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS services (
   description TEXT NOT NULL DEFAULT '',
   duration_min INT NOT NULL CHECK (duration_min > 0),
   price_cents INT NOT NULL CHECK (price_cents >= 0),
+  image_url TEXT NOT NULL DEFAULT '',
   active BOOLEAN NOT NULL DEFAULT TRUE
 );
 

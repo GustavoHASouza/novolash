@@ -9,7 +9,7 @@ r.post('/auth/login', login);
 
 r.get('/services', async (_req, res) => {
   const { rows } = await q(
-    'SELECT id, name, description, duration_min, price_cents FROM services WHERE active ORDER BY price_cents DESC');
+    'SELECT id, name, description, duration_min, price_cents, image_url FROM services WHERE active ORDER BY price_cents DESC');
   res.json(rows);
 });
 

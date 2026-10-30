@@ -20,8 +20,8 @@ export default function Login({ onLogin }) {
     <div className="login-page">
       <div className="login-card">
         <div className="login-header">
-          <span className="login-logo">✨</span>
-          <h2>Painel Profissional</h2>
+          <span className="header-monogram lg">NL</span>
+          <h2>Painel da Profissional</h2>
           <p>{STUDIO}</p>
         </div>
         {err && <div className="msg err">{err}</div>}
@@ -48,7 +48,7 @@ export default function Login({ onLogin }) {
           </label>
           <button type="submit" style={{ width: '100%' }}>Entrar</button>
           <div style={{ textAlign: 'center', marginTop: 16 }}>
-            <Link to="/" className="muted" style={{ textDecoration: 'none' }}>← Voltar para página de agendamento</Link>
+            <Link to="/" className="muted" style={{ textDecoration: 'none' }}>Voltar para página de agendamento</Link>
           </div>
         </form>
       </div>

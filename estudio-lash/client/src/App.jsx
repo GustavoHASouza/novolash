@@ -8,10 +8,10 @@ function PublicHeader() {
     <header className="site-header">
       <div className="header-inner">
         <Link to="/" className="header-brand">
-          <span className="header-logo">✨</span>
+          <span className="header-monogram">NL</span>
           <div>
             <div className="header-name">{STUDIO}</div>
-            <div className="header-tagline">Extensão de Cílios & Design</div>
+            <div className="header-tagline">Lash & Brow Boutique</div>
           </div>
         </Link>
         <nav className="header-nav">
@@ -27,11 +27,11 @@ function Footer() {
   return (
     <footer className="site-footer">
       <div className="footer-inner">
-        <div className="footer-brand">✨ {STUDIO}</div>
-        <div className="footer-tagline">Extensão de Cílios & Design de Sobrancelha</div>
+        <div className="footer-brand">{STUDIO}</div>
+        <div className="footer-tagline">Especialistas em Extensão de Cílios & Design de Sobrancelhas</div>
         <div className="footer-divider" />
         <div className="footer-info">
-          Realce sua beleza natural com cuidado e delicadeza
+          Atendimento com hora marcada · Todos os direitos reservados
         </div>
       </div>
     </footer>

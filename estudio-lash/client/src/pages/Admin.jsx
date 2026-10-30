@@ -7,9 +7,9 @@ import Settings from './Settings.jsx';
 import { STUDIO } from '../api.js';
 
 const TABS = {
-  agenda: { label: 'Agenda', icon: '📅' },
-  financeiro: { label: 'Financeiro', icon: '💰' },
-  config: { label: 'Serviços e Horários', icon: '⚙️' },
+  agenda: 'Agenda',
+  financeiro: 'Financeiro',
+  config: 'Serviços e Horários',
 };
 
 export default function Admin() {
@@ -24,7 +24,10 @@ export default function Admin() {
     <div className="admin-layout">
       <header className="admin-header">
         <div className="admin-header-inner">
-          <h1><span>✨</span> {STUDIO} — Painel</h1>
+          <div className="admin-brand">
+            <span className="header-monogram sm">NL</span>
+            <h1>{STUDIO} <span>· Painel</span></h1>
+          </div>
           <div className="row">
             <Link to="/" className="admin-logout" style={{ textDecoration: 'none' }}>Ver Site</Link>
             <button
@@ -39,13 +42,13 @@ export default function Admin() {
 
       <div className="admin-wrap">
         <div className="admin-tabs">
-          {Object.entries(TABS).map(([k, v]) => (
+          {Object.entries(TABS).map(([k, label]) => (
             <button
               key={k}
               className={tab === k ? 'active-tab' : ''}
               onClick={() => setTab(k)}
             >
-              {v.icon} {v.label}
+              {label}
             </button>
           ))}
         </div>

@@ -46,7 +46,7 @@ export default function Finance() {
 
       <div className="finance-month">
         <label>
-          📊 Mês de referência
+          Mês de referência
           <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} />
         </label>
       </div>
@@ -54,15 +54,15 @@ export default function Finance() {
       {sum && (
         <div className="stats">
           <div className="stat">
-            <span className="muted">💚 Receitas</span>
+            <span className="muted">Receitas</span>
             <b className="pos">{money(sum.receita)}</b>
           </div>
           <div className="stat">
-            <span className="muted">🔴 Despesas</span>
+            <span className="muted">Despesas</span>
             <b className="neg">{money(sum.despesa)}</b>
           </div>
           <div className="stat">
-            <span className="muted">📊 Saldo do Mês</span>
+            <span className="muted">Saldo do Mês</span>
             <b className={sum.saldo >= 0 ? 'pos' : 'neg'}>{money(sum.saldo)}</b>
           </div>
         </div>
@@ -70,7 +70,7 @@ export default function Finance() {
 
       {sum?.categorias.length > 0 && (
         <div className="card">
-          <h3>📂 Por Categoria</h3>
+          <h3>Resumo por Categoria</h3>
           <table><tbody>
             {sum.categorias.map((c) => (
               <tr key={c.type + c.category}>
@@ -84,9 +84,9 @@ export default function Finance() {
       )}
 
       <form className="card" onSubmit={add}>
-        <h3>➕ Novo Lançamento</h3>
+        <h3>Novo Lançamento</h3>
         <p className="muted" style={{ marginBottom: 16 }}>
-          Atendimentos marcados como "Concluído" na agenda entram como receita automaticamente.
+          Atendimentos marcados como "Concluído" na agenda são registrados como receita automaticamente.
         </p>
         <div className="grid">
           <label>Tipo
@@ -103,11 +103,11 @@ export default function Finance() {
           <label>Valor (R$)<input required type="number" step="0.01" min="0.01" placeholder="0.00" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></label>
           <label>Data<input required type="date" value={f.occurred_on} onChange={(e) => setF({ ...f, occurred_on: e.target.value })} /></label>
         </div>
-        <button style={{ marginTop: 12 }}>Adicionar</button>
+        <button style={{ marginTop: 12 }}>Adicionar Lançamento</button>
       </form>
 
       <div className="card">
-        <h3>📋 Lançamentos</h3>
+        <h3>Histórico de Lançamentos</h3>
         {rows.length === 0 && <p className="muted">Nenhum lançamento neste mês.</p>}
         {rows.length > 0 && (
           <table><tbody>
@@ -118,8 +118,8 @@ export default function Finance() {
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }} className={t.type === 'receita' ? 'pos' : 'neg'}>
                   {t.type === 'receita' ? '+' : '−'}{money(t.amount_cents)}
                 </td>
-                <td style={{ width: 40, textAlign: 'center' }}>
-                  <button className="ghost sm" onClick={() => remove(t.id)} title="Excluir">×</button>
+                <td style={{ width: 60, textAlign: 'right' }}>
+                  <button className="ghost sm" onClick={() => remove(t.id)} title="Excluir">Excluir</button>
                 </td>
               </tr>
             ))}

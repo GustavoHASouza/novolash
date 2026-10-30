@@ -72,7 +72,7 @@ const serviceValues = (b) => {
   const dur = parseInt(b?.duration_min, 10);
   const price = Math.round(Number(b?.price) * 100);
   if (!name || !(dur > 0) || !(price >= 0)) return null;
-  return [name, b.description?.trim() || '', dur, price, b.active !== false];
+  return [name, b.description?.trim() || '', dur, price, b.active !== false, b.image_url?.trim() || ''];
 };
 
 r.get('/services', async (_req, res) => {
@@ -83,8 +83,8 @@ r.post('/services', async (req, res) => {
   const v = serviceValues(req.body);
   if (!v) return bad(res);
   const { rows: [s] } = await q(
-    `INSERT INTO services (name, description, duration_min, price_cents, active)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`, v);
+    `INSERT INTO services (name, description, duration_min, price_cents, active, image_url)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, v);
   res.status(201).json(s);
 });
 
@@ -92,8 +92,8 @@ r.put('/services/:id', async (req, res) => {
   const v = serviceValues(req.body);
   if (!v) return bad(res);
   const { rows: [s] } = await q(
-    `UPDATE services SET name=$1, description=$2, duration_min=$3, price_cents=$4, active=$5
-     WHERE id=$6 RETURNING *`, [...v, Number(req.params.id) || 0]);
+    `UPDATE services SET name=$1, description=$2, duration_min=$3, price_cents=$4, active=$5, image_url=$6
+     WHERE id=$7 RETURNING *`, [...v, Number(req.params.id) || 0]);
   if (!s) return res.status(404).json({ error: 'Serviço não encontrado' });
   res.json(s);
 });

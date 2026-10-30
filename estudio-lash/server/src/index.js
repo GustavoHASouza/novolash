@@ -9,7 +9,7 @@ const rawOrigin = process.env.CORS_ORIGIN || '*';
 const origins = rawOrigin === '*' ? '*' : rawOrigin.split(',').map((s) => s.trim());
 
 app.use(cors({ origin: origins }));
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
