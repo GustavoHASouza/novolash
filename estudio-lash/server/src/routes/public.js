@@ -8,8 +8,10 @@ const r = Router();
 r.post('/auth/login', login);
 
 r.get('/settings', async (_req, res) => {
-  const { rows: [st] } = await q('SELECT studio_name, avatar_url FROM studio_settings WHERE id = 1');
-  res.json(st || { studio_name: 'Novolash Studio', avatar_url: '' });
+  const { rows: [st] } = await q(
+    'SELECT studio_name, avatar_url, slot_interval_min, primary_color, secondary_color FROM studio_settings WHERE id = 1'
+  );
+  res.json(st || { studio_name: 'Novolash Studio', avatar_url: '', slot_interval_min: 30, primary_color: '#b76e79', secondary_color: '#261e1e' });
 });
 
 r.get('/services', async (_req, res) => {

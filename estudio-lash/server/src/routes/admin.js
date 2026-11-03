@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool, q } from '../db.js';
 import { checkAdminPassword, hashPassword, requireAuth } from '../auth.js';
-import { book, getSlotIntervalMin, localDate, toInstant } from '../slots.js';
+import { book, customPrice, getSlotIntervalMin, localDate, toInstant } from '../slots.js';
 
 const r = Router();
 r.use(requireAuth);
@@ -9,28 +9,64 @@ r.use(requireAuth);
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const HEX = /^#[0-9a-fA-F]{6}$/;
 const STATUSES = ['agendado', 'concluido', 'cancelado', 'faltou'];
 const bad = (res, msg = 'Dados inválidos') => res.status(400).json({ error: msg });
 
+function blockRange(b) {
+  const { start_date, start_time, end_date, end_time } = b || {};
+  if (!DATE.test(start_date || '') || !TIME.test(start_time || '') || !DATE.test(end_date || '') || !TIME.test(end_time || '')) return null;
+  const s = toInstant(start_date, start_time);
+  const e = toInstant(end_date, end_time);
+  if (isNaN(s) || isNaN(e) || e <= s) return null;
+  return [s, e];
+}
+
+async function blockConflicts(s, e, ignoreId = 0) {
+  const { rows: [row] } = await q(
+    `SELECT COUNT(*) FILTER (WHERE kind = 'atendimento')::int AS appts,
+            COUNT(*) FILTER (WHERE kind = 'bloqueio')::int AS blocks
+     FROM appointments
+     WHERE status = 'agendado' AND id <> $3 AND starts_at < $2 AND ends_at > $1`,
+    [s, e, ignoreId]
+  );
+  return { appts: row?.appts || 0, blocks: row?.blocks || 0 };
+}
+
+function conflictMessage(c) {
+  if (c.appts > 0) {
+    return c.appts === 1
+      ? 'Não é possível marcar este período como indisponível: existe 1 agendamento nessa janela de tempo.'
+      : `Não é possível marcar este período como indisponível: existem ${c.appts} agendamentos nessa janela de tempo.`;
+  }
+  return 'Já existe um período indisponível cadastrado que se sobrepõe a esta janela de tempo.';
+}
+
 /* ---------- Configurações da Conta & Estúdio ---------- */
 r.get('/settings', async (_req, res) => {
-  const { rows: [st] } = await q('SELECT studio_name, avatar_url FROM studio_settings WHERE id = 1');
-  res.json(st || { studio_name: 'Novolash Studio', avatar_url: '' });
+  const { rows: [st] } = await q(
+    'SELECT studio_name, avatar_url, slot_interval_min, primary_color, secondary_color FROM studio_settings WHERE id = 1'
+  );
+  res.json(st || { studio_name: 'Novolash Studio', avatar_url: '', slot_interval_min: 30, primary_color: '#b76e79', secondary_color: '#261e1e' });
 });
 
 r.put('/settings', async (req, res) => {
   const studioName = req.body?.studio_name?.trim();
   const avatarUrl = typeof req.body?.avatar_url === 'string' ? req.body.avatar_url.trim() : undefined;
+  const primary = HEX.test(req.body?.primary_color || '') ? req.body.primary_color : '#b76e79';
+  const secondary = HEX.test(req.body?.secondary_color || '') ? req.body.secondary_color : '#261e1e';
   if (!studioName) return bad(res, 'Informe o nome do estúdio');
   const { rows: [st] } = await q(
-    `INSERT INTO studio_settings (id, studio_name, avatar_url, updated_at)
-     VALUES (1, $1, COALESCE($2, ''), now())
+    `INSERT INTO studio_settings (id, studio_name, avatar_url, primary_color, secondary_color, updated_at)
+     VALUES (1, $1, COALESCE($2, ''), $3, $4, now())
      ON CONFLICT (id) DO UPDATE
        SET studio_name = EXCLUDED.studio_name,
            avatar_url = CASE WHEN $2 IS NULL THEN studio_settings.avatar_url ELSE $2 END,
+           primary_color = EXCLUDED.primary_color,
+           secondary_color = EXCLUDED.secondary_color,
            updated_at = now()
-     RETURNING studio_name, avatar_url`,
-    [studioName, avatarUrl ?? null]
+     RETURNING studio_name, avatar_url, slot_interval_min, primary_color, secondary_color`,
+    [studioName, avatarUrl ?? null, primary, secondary]
   );
   res.json(st);
 });
@@ -60,17 +96,111 @@ r.get('/appointments', async (req, res) => {
   const start = toInstant(from, '00:00');
   const end = new Date(toInstant(to, '00:00').getTime() + 86400000);
   const { rows } = await q(
-    `SELECT a.id, a.client_name, a.client_phone, a.client_email, a.notes, a.status,
-            a.starts_at, a.ends_at, s.name AS service, s.price_cents
-     FROM appointments a JOIN services s ON s.id = a.service_id
-     WHERE a.starts_at >= $1 AND a.starts_at < $2
+    `SELECT a.id, a.kind, a.service_id, a.client_name, a.client_phone, a.client_email, a.notes, a.status,
+            a.starts_at, a.ends_at, s.name AS service, s.price_cents AS service_price_cents,
+            COALESCE(a.price_cents, s.price_cents, 0)::int AS price_cents
+     FROM appointments a LEFT JOIN services s ON s.id = a.service_id
+     WHERE a.starts_at < $2 AND a.ends_at > $1
      ORDER BY a.starts_at`, [start, end]);
   res.json(rows);
 });
 
 r.post('/appointments', async (req, res) => {
+  if (req.body?.kind === 'bloqueio') {
+    const range = blockRange(req.body);
+    if (!range) return bad(res, 'Informe início e término válidos (o término deve ser depois do início)');
+    const conflicts = await blockConflicts(range[0], range[1]);
+    if (conflicts.appts || conflicts.blocks) {
+      return res.status(409).json({ error: conflictMessage(conflicts), conflicts: conflicts.appts });
+    }
+    try {
+      const { rows: [a] } = await q(
+        `INSERT INTO appointments (kind, service_id, client_name, client_phone, notes, starts_at, ends_at)
+         VALUES ('bloqueio', NULL, 'Indisponível', '', $1, $2, $3) RETURNING id, starts_at, ends_at`,
+        [String(req.body.notes || '').trim() || null, range[0], range[1]]
+      );
+      return res.status(201).json(a);
+    } catch (e) {
+      if (e.code === '23P01') return res.status(409).json({ error: 'Conflita com outro horário agendado' });
+      throw e;
+    }
+  }
   const [code, body] = await book(req.body, { force: true });
   res.status(code).json(body);
+});
+
+r.delete('/appointments/:id', async (req, res) => {
+  const { rowCount } = await q('DELETE FROM appointments WHERE id = $1', [Number(req.params.id) || 0]);
+  if (!rowCount) return res.status(404).json({ error: 'Agendamento não encontrado' });
+  res.json({ ok: true });
+});
+
+r.put('/appointments/:id', async (req, res) => {
+  const id = Number(req.params.id) || 0;
+  const { rows: [cur] } = await q('SELECT * FROM appointments WHERE id = $1', [id]);
+  if (!cur) return res.status(404).json({ error: 'Agendamento não encontrado' });
+
+  if (cur.kind === 'bloqueio') {
+    const range = blockRange(req.body);
+    if (!range) return bad(res, 'Informe início e término válidos (o término deve ser depois do início)');
+    const conflicts = await blockConflicts(range[0], range[1], id);
+    if (conflicts.appts || conflicts.blocks) {
+      return res.status(409).json({ error: conflictMessage(conflicts), conflicts: conflicts.appts });
+    }
+    await q(
+      'UPDATE appointments SET starts_at = $1, ends_at = $2, notes = $3 WHERE id = $4',
+      [range[0], range[1], String(req.body?.notes || '').trim() || null, id]
+    );
+    return res.json({ ok: true });
+  }
+
+  const { date, time } = req.body || {};
+  const name = String(req.body?.name || '').trim();
+  const phone = String(req.body?.phone || '').trim();
+  const serviceId = Number(req.body?.serviceId) || 0;
+  const price = customPrice(req.body?.price);
+  if (!name || !phone || !DATE.test(date || '') || !TIME.test(time || '')) {
+    return bad(res, 'Preencha cliente, telefone, data e horário');
+  }
+  if (price === undefined) return bad(res, 'Informe um valor válido para o atendimento');
+  const { rows: [svc] } = await q('SELECT id FROM services WHERE id = $1', [serviceId]);
+  if (!svc) return res.status(404).json({ error: 'Serviço não encontrado' });
+
+  const start = toInstant(date, time);
+  const durMs = new Date(cur.ends_at).getTime() - new Date(cur.starts_at).getTime();
+  const end = new Date(start.getTime() + Math.max(15 * 60000, durMs));
+
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const { rows: [a] } = await c.query(
+      `UPDATE appointments
+       SET client_name = $1, client_phone = $2, client_email = $3, notes = $4,
+           service_id = $5, price_cents = $6, starts_at = $7, ends_at = $8
+       WHERE id = $9 RETURNING id, status, client_name, service_id, starts_at`,
+      [name, phone, String(req.body?.email || '').trim() || null, String(req.body?.notes || '').trim() || null,
+        serviceId, price, start, end, id]
+    );
+    if (a.status === 'concluido') {
+      await c.query('DELETE FROM transactions WHERE appointment_id = $1', [id]);
+      await c.query(
+        `INSERT INTO transactions (type, description, category, amount_cents, occurred_on, appointment_id)
+         SELECT 'receita', $2::text || ' — ' || s.name, 'Atendimentos', COALESCE($5::int, s.price_cents), $3::date, $1
+         FROM services s WHERE s.id = $4 AND COALESCE($5::int, s.price_cents) > 0`,
+        [id, a.client_name, localDate(a.starts_at), a.service_id, price]
+      );
+    }
+    await c.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    await c.query('ROLLBACK');
+    if (e.code === '23P01') {
+      return res.status(409).json({ error: 'Este horário conflita com outro agendamento ou período indisponível' });
+    }
+    throw e;
+  } finally {
+    c.release();
+  }
 });
 
 r.patch('/appointments/:id', async (req, res) => {
@@ -81,18 +211,18 @@ r.patch('/appointments/:id', async (req, res) => {
     await c.query('BEGIN');
     const { rows: [a] } = await c.query(
       `UPDATE appointments SET status = $1 WHERE id = $2
-       RETURNING id, client_name, service_id, starts_at`, [status, Number(req.params.id) || 0]);
+       RETURNING id, kind, client_name, service_id, starts_at, price_cents`, [status, Number(req.params.id) || 0]);
     if (!a) {
       await c.query('ROLLBACK');
       return res.status(404).json({ error: 'Agendamento não encontrado' });
     }
     await c.query('DELETE FROM transactions WHERE appointment_id = $1', [a.id]);
-    if (status === 'concluido') {
+    if (status === 'concluido' && a.kind === 'atendimento') {
       await c.query(
         `INSERT INTO transactions (type, description, category, amount_cents, occurred_on, appointment_id)
-         SELECT 'receita', $2::text || ' — ' || s.name, 'Atendimentos', s.price_cents, $3::date, $1
-         FROM services s WHERE s.id = $4 AND s.price_cents > 0`,
-        [a.id, a.client_name, localDate(a.starts_at), a.service_id]);
+         SELECT 'receita', $2::text || ' — ' || s.name, 'Atendimentos', COALESCE($5::int, s.price_cents), $3::date, $1
+         FROM services s WHERE s.id = $4 AND COALESCE($5::int, s.price_cents) > 0`,
+        [a.id, a.client_name, localDate(a.starts_at), a.service_id, a.price_cents]);
     }
     await c.query('COMMIT');
     res.json({ ok: true });

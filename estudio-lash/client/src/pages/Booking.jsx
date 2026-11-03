@@ -16,6 +16,7 @@ const STEPS = [
 export default function Booking() {
   const [services, setServices] = useState([]);
   const [search, setSearch] = useState('');
+  const [sortOrder, setSortOrder] = useState(null);
   const [svc, setSvc] = useState(null);
   const [step, setStep] = useState(1);
   const [date, setDate] = useState(today());
@@ -91,14 +92,20 @@ export default function Booking() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  const filteredServices = services.filter((s) => {
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      s.name?.toLowerCase().includes(q) ||
-      s.description?.toLowerCase().includes(q)
-    );
-  });
+  const filteredServices = services
+    .filter((s) => {
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        s.name?.toLowerCase().includes(q) ||
+        s.description?.toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => {
+      if (sortOrder === 'asc') return a.price_cents - b.price_cents;
+      if (sortOrder === 'desc') return b.price_cents - a.price_cents;
+      return 0;
+    });
 
   if (msg?.ok) {
     return (
@@ -124,7 +131,7 @@ export default function Booking() {
       <div className="hero">
         <span className="hero-eyebrow">Agendamento Online</span>
         <h1>Realce a Beleza do seu Olhar</h1>
-        <p>Escolha o modelo desejado, selecione o melhor horário e confirme sua sessão em poucos segundos.</p>
+        <p>Escolha o modelo desejado, selecione o melhor horário e confirme seu atendimento em poucos segundos.</p>
       </div>
 
       {/* Stepper */}
@@ -197,6 +204,35 @@ export default function Booking() {
                 Limpar
               </button>
             )}
+          </div>
+
+          {/* Ordenação por preço */}
+          <div className="sort-bar">
+            <span className="sort-label">Ordenar por preço</span>
+            <div className="sort-toggle" role="group" aria-label="Ordenar por preço">
+              <button
+                type="button"
+                className={`sort-option ${sortOrder === 'asc' ? 'active' : ''}`}
+                aria-pressed={sortOrder === 'asc'}
+                onClick={() => setSortOrder(sortOrder === 'asc' ? null : 'asc')}
+              >
+                <svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10 15V5M6 9l4-4 4 4" />
+                </svg>
+                Menor preço
+              </button>
+              <button
+                type="button"
+                className={`sort-option ${sortOrder === 'desc' ? 'active' : ''}`}
+                aria-pressed={sortOrder === 'desc'}
+                onClick={() => setSortOrder(sortOrder === 'desc' ? null : 'desc')}
+              >
+                <svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10 5v10M6 11l4 4 4-4" />
+                </svg>
+                Maior preço
+              </button>
+            </div>
           </div>
 
           {filteredServices.length === 0 ? (

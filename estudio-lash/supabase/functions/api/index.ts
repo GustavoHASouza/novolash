@@ -139,9 +139,48 @@ async function slotsFor(date: string, _durationMin?: number) {
   return out;
 }
 
+/* ---------- Valor personalizado do atendimento ---------- */
+function customPrice(raw: unknown): number | null | undefined {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+  const cents = toCents(String(raw).replace(",", "."));
+  return Number.isFinite(cents) && cents >= 0 ? cents : undefined;
+}
+
+/* ---------- Períodos indisponíveis ("Estarei indisponível") ---------- */
+function blockRange(b: any): [Date, Date] | null {
+  const { start_date, start_time, end_date, end_time } = b || {};
+  if (!DATE.test(start_date || "") || !TIME.test(start_time || "") ||
+    !DATE.test(end_date || "") || !TIME.test(end_time || "")) return null;
+  const s = toInstant(start_date, start_time);
+  const e = toInstant(end_date, end_time);
+  if (isNaN(s.getTime()) || isNaN(e.getTime()) || e <= s) return null;
+  return [s, e];
+}
+
+async function blockConflicts(s: Date, e: Date, ignoreId = 0) {
+  const { rows: [r] } = await q(
+    `SELECT COUNT(*) FILTER (WHERE kind = 'atendimento')::int AS appts,
+            COUNT(*) FILTER (WHERE kind = 'bloqueio')::int AS blocks
+     FROM public.appointments
+     WHERE status = 'agendado' AND id <> $3 AND starts_at < $2 AND ends_at > $1`,
+    [s, e, ignoreId]);
+  return { appts: r?.appts || 0, blocks: r?.blocks || 0 };
+}
+
+function conflictMessage(c: { appts: number; blocks: number }) {
+  if (c.appts > 0) {
+    return c.appts === 1
+      ? "Não é possível marcar este período como indisponível: existe 1 agendamento nessa janela de tempo."
+      : `Não é possível marcar este período como indisponível: existem ${c.appts} agendamentos nessa janela de tempo.`;
+  }
+  return "Já existe um período indisponível cadastrado que se sobrepõe a esta janela de tempo.";
+}
+
 async function book(b: any, { force = false } = {}): Promise<[number, unknown]> {
   const { date, time, name, phone, email, notes } = b || {};
   const serviceId = Number(b?.serviceId) || 0;
+  const price = force ? customPrice(b?.price) : null;
+  if (price === undefined) return [400, { error: "Informe um valor válido para o atendimento" }];
   if (!name?.trim() || !phone?.trim() || !DATE.test(date || "") || !TIME.test(time || "")) {
     return [400, { error: "Preencha nome, telefone, data e horário" }];
   }
@@ -182,9 +221,9 @@ async function book(b: any, { force = false } = {}): Promise<[number, unknown]> 
 
   try {
     const { rows: [a] } = await q(
-      `INSERT INTO public.appointments (service_id, client_name, client_phone, client_email, notes, starts_at, ends_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, starts_at, ends_at`,
-      [serviceId, name.trim(), phone.trim(), email?.trim() || null, notes?.trim() || null, start, end]);
+      `INSERT INTO public.appointments (service_id, client_name, client_phone, client_email, notes, starts_at, ends_at, price_cents)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, starts_at, ends_at`,
+      [serviceId, name.trim(), phone.trim(), email?.trim() || null, notes?.trim() || null, start, end, price]);
     return [201, a];
   } catch (e: any) {
     if (e.code === "23P01") return [409, { error: "Este horário não está mais disponível" }];
@@ -239,8 +278,10 @@ Deno.serve(async (req: Request) => {
 
     if (path === "/settings" && method === "GET") {
       const { rows: [s] } = await q(
-        "SELECT studio_name, avatar_url, slot_interval_min FROM public.studio_settings WHERE id = 1");
-      return json(s || { studio_name: "Novolash Studio", avatar_url: "", slot_interval_min: 30 });
+        `SELECT studio_name, avatar_url, slot_interval_min, primary_color, secondary_color
+         FROM public.studio_settings WHERE id = 1`);
+      return json(s || { studio_name: "Novolash Studio", avatar_url: "", slot_interval_min: 30,
+        primary_color: "#b76e79", secondary_color: "#261e1e" });
     }
 
     if (path === "/auth/login" && method === "POST") {
@@ -288,7 +329,8 @@ Deno.serve(async (req: Request) => {
     // Conta
     if (sub === "/settings" && method === "GET") {
       const { rows: [s] } = await q(
-        "SELECT studio_name, avatar_url, slot_interval_min FROM public.studio_settings WHERE id = 1");
+        `SELECT studio_name, avatar_url, slot_interval_min, primary_color, secondary_color
+         FROM public.studio_settings WHERE id = 1`);
       return json({ ...s, email: ADMIN_EMAIL });
     }
 
@@ -296,9 +338,15 @@ Deno.serve(async (req: Request) => {
       const name = String(body.studio_name || "").trim();
       if (!name || name.length > 80) return bad("Informe um nome de estúdio válido");
       const avatar = String(body.avatar_url || "");
+      const HEX = /^#[0-9a-fA-F]{6}$/;
+      const primary = HEX.test(body.primary_color || "") ? body.primary_color : "#b76e79";
+      const secondary = HEX.test(body.secondary_color || "") ? body.secondary_color : "#261e1e";
       const { rows: [s] } = await q(
-        `UPDATE public.studio_settings SET studio_name = $1, avatar_url = $2, updated_at = now()
-         WHERE id = 1 RETURNING studio_name, avatar_url, slot_interval_min`, [name, avatar]);
+        `UPDATE public.studio_settings
+         SET studio_name = $1, avatar_url = $2, primary_color = $3, secondary_color = $4, updated_at = now()
+         WHERE id = 1
+         RETURNING studio_name, avatar_url, slot_interval_min, primary_color, secondary_color`,
+        [name, avatar, primary, secondary]);
       return json(s);
     }
 
@@ -320,17 +368,107 @@ Deno.serve(async (req: Request) => {
       const start = toInstant(from, "00:00");
       const end = new Date(toInstant(to, "00:00").getTime() + 86400000);
       const { rows } = await q(
-        `SELECT a.id, a.client_name, a.client_phone, a.client_email, a.notes, a.status,
-                a.starts_at, a.ends_at, s.name AS service, s.price_cents
-         FROM public.appointments a JOIN public.services s ON s.id = a.service_id
-         WHERE a.starts_at >= $1 AND a.starts_at < $2
+        `SELECT a.id, a.kind, a.service_id, a.client_name, a.client_phone, a.client_email, a.notes, a.status,
+                a.starts_at, a.ends_at, s.name AS service, s.price_cents AS service_price_cents,
+                COALESCE(a.price_cents, s.price_cents, 0)::int AS price_cents
+         FROM public.appointments a LEFT JOIN public.services s ON s.id = a.service_id
+         WHERE a.starts_at < $2 AND a.ends_at > $1
          ORDER BY a.starts_at`, [start, end]);
       return json(rows);
     }
 
     if (sub === "/appointments" && method === "POST") {
+      if (body?.kind === "bloqueio") {
+        const range = blockRange(body);
+        if (!range) return bad("Informe início e término válidos (o término deve ser depois do início)");
+        const conflicts = await blockConflicts(range[0], range[1]);
+        if (conflicts.appts || conflicts.blocks) {
+          return json({ error: conflictMessage(conflicts), conflicts: conflicts.appts }, 409);
+        }
+        try {
+          const { rows: [a] } = await q(
+            `INSERT INTO public.appointments (kind, service_id, client_name, client_phone, notes, starts_at, ends_at)
+             VALUES ('bloqueio', NULL, 'Indisponível', '', $1, $2, $3) RETURNING id, starts_at, ends_at`,
+            [String(body.notes || "").trim() || null, range[0], range[1]]);
+          return json(a, 201);
+        } catch (e: any) {
+          if (e.code === "23P01") return json({ error: "Conflita com outro horário agendado" }, 409);
+          throw e;
+        }
+      }
       const [code, resBody] = await book(body, { force: true });
       return json(resBody, code);
+    }
+
+    if ((m = sub.match(/^\/appointments\/(\d+)$/)) && method === "DELETE") {
+      const { rowCount } = await q("DELETE FROM public.appointments WHERE id = $1", [Number(m[1])]);
+      if (!rowCount) return json({ error: "Agendamento não encontrado" }, 404);
+      return json({ ok: true });
+    }
+
+    if ((m = sub.match(/^\/appointments\/(\d+)$/)) && method === "PUT") {
+      const id = Number(m[1]);
+      const { rows: [cur] } = await q("SELECT * FROM public.appointments WHERE id = $1", [id]);
+      if (!cur) return json({ error: "Agendamento não encontrado" }, 404);
+
+      if (cur.kind === "bloqueio") {
+        const range = blockRange(body);
+        if (!range) return bad("Informe início e término válidos (o término deve ser depois do início)");
+        const conflicts = await blockConflicts(range[0], range[1], id);
+        if (conflicts.appts || conflicts.blocks) {
+          return json({ error: conflictMessage(conflicts), conflicts: conflicts.appts }, 409);
+        }
+        await q(
+          "UPDATE public.appointments SET starts_at = $1, ends_at = $2, notes = $3 WHERE id = $4",
+          [range[0], range[1], String(body.notes || "").trim() || null, id]);
+        return json({ ok: true });
+      }
+
+      const { date, time } = body;
+      const name = String(body.name || "").trim();
+      const phone = String(body.phone || "").trim();
+      const serviceId = Number(body.serviceId) || 0;
+      const price = customPrice(body.price);
+      if (!name || !phone || !DATE.test(date || "") || !TIME.test(time || "")) {
+        return bad("Preencha cliente, telefone, data e horário");
+      }
+      if (price === undefined) return bad("Informe um valor válido para o atendimento");
+      const { rows: [svc] } = await q("SELECT id FROM public.services WHERE id = $1", [serviceId]);
+      if (!svc) return json({ error: "Serviço não encontrado" }, 404);
+
+      const start = toInstant(date, time);
+      const durMs = new Date(cur.ends_at).getTime() - new Date(cur.starts_at).getTime();
+      const end = new Date(start.getTime() + Math.max(15 * 60000, durMs));
+
+      const c = await pool.connect();
+      try {
+        await c.query("BEGIN");
+        const { rows: [a] } = await c.query(
+          `UPDATE public.appointments
+           SET client_name = $1, client_phone = $2, client_email = $3, notes = $4,
+               service_id = $5, price_cents = $6, starts_at = $7, ends_at = $8
+           WHERE id = $9 RETURNING id, status, client_name, service_id, starts_at`,
+          [name, phone, String(body.email || "").trim() || null, String(body.notes || "").trim() || null,
+            serviceId, price, start, end, id]);
+        if (a.status === "concluido") {
+          await c.query("DELETE FROM public.transactions WHERE appointment_id = $1", [id]);
+          await c.query(
+            `INSERT INTO public.transactions (type, description, category, amount_cents, occurred_on, appointment_id)
+             SELECT 'receita', $2::text || ' — ' || s.name, 'Atendimentos', COALESCE($5::int, s.price_cents), $3::date, $1
+             FROM public.services s WHERE s.id = $4 AND COALESCE($5::int, s.price_cents) > 0`,
+            [id, a.client_name, localDate(new Date(a.starts_at)), a.service_id, price]);
+        }
+        await c.query("COMMIT");
+        return json({ ok: true });
+      } catch (e: any) {
+        await c.query("ROLLBACK");
+        if (e.code === "23P01") {
+          return json({ error: "Este horário conflita com outro agendamento ou período indisponível" }, 409);
+        }
+        throw e;
+      } finally {
+        c.release();
+      }
     }
 
     if ((m = sub.match(/^\/appointments\/(\d+)$/)) && method === "PATCH") {
@@ -341,18 +479,18 @@ Deno.serve(async (req: Request) => {
         await c.query("BEGIN");
         const { rows: [a] } = await c.query(
           `UPDATE public.appointments SET status = $1 WHERE id = $2
-           RETURNING id, client_name, service_id, starts_at`, [status, Number(m[1])]);
+           RETURNING id, kind, client_name, service_id, starts_at, price_cents`, [status, Number(m[1])]);
         if (!a) {
           await c.query("ROLLBACK");
           return json({ error: "Agendamento não encontrado" }, 404);
         }
         await c.query("DELETE FROM public.transactions WHERE appointment_id = $1", [a.id]);
-        if (status === "concluido") {
+        if (status === "concluido" && a.kind === "atendimento") {
           await c.query(
             `INSERT INTO public.transactions (type, description, category, amount_cents, occurred_on, appointment_id)
-             SELECT 'receita', $2::text || ' — ' || s.name, 'Atendimentos', s.price_cents, $3::date, $1
-             FROM public.services s WHERE s.id = $4 AND s.price_cents > 0`,
-            [a.id, a.client_name, localDate(new Date(a.starts_at)), a.service_id]);
+             SELECT 'receita', $2::text || ' — ' || s.name, 'Atendimentos', COALESCE($5::int, s.price_cents), $3::date, $1
+             FROM public.services s WHERE s.id = $4 AND COALESCE($5::int, s.price_cents) > 0`,
+            [a.id, a.client_name, localDate(new Date(a.starts_at)), a.service_id, a.price_cents]);
         }
         await c.query("COMMIT");
         return json({ ok: true });

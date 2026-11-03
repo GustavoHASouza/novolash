@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
 import ImageCropModal from '../components/ImageCropModal.jsx';
+import { Toast } from '../components/Dialog.jsx';
 
 const DIAS = [
   'Domingo',
@@ -98,7 +99,7 @@ function ServiceRow({ s, onSave }) {
                 className="ghost sm"
                 onClick={() => setCropSrc(v.image_url)}
               >
-                Ajustar
+                Ajustar / Girar
               </button>
               <button
                 type="button"
@@ -167,6 +168,7 @@ export default function Settings() {
   const [bulkBreakEnd, setBulkBreakEnd] = useState('13:00');
   const [msg, setMsg] = useState(null);
   const [n, setN] = useState(0);
+  const closeToast = useCallback(() => setMsg(null), []);
 
   const load = () => {
     api.admin('/services').then(setServices).catch(() => {});
@@ -203,10 +205,8 @@ export default function Settings() {
       await fn();
       setMsg({ ok });
       load();
-      window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (e) {
       setMsg({ err: e.message });
-      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
@@ -259,8 +259,7 @@ export default function Settings() {
 
   return (
     <div className="step-screen">
-      {msg?.ok && <div className="msg ok">{msg.ok}</div>}
-      {msg?.err && <div className="msg err">{msg.err}</div>}
+      <Toast toast={msg} onClose={closeToast} />
 
       {/* CARD 1: HORÁRIO DE FUNCIONAMENTO, INTERVALO DE ATENDIMENTOS E ALMOÇO */}
       <div className="card">

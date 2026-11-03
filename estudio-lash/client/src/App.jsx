@@ -2,7 +2,15 @@ import { useEffect, useState } from 'react';
 import { Route, Routes, useLocation, Link } from 'react-router-dom';
 import Booking from './pages/Booking.jsx';
 import Admin from './pages/Admin.jsx';
-import { api, STUDIO, StudioContext, useStudio } from './api.js';
+import {
+  api,
+  applyTheme,
+  DEFAULT_PRIMARY,
+  DEFAULT_SECONDARY,
+  STUDIO,
+  StudioContext,
+  useStudio,
+} from './api.js';
 
 function getInitials(name) {
   const parts = String(name || 'NL').trim().split(/\s+/);
@@ -57,6 +65,8 @@ export default function App() {
   const [studioSettings, setStudioSettingsState] = useState({
     studioName: localStorage.getItem('studio_name') || STUDIO,
     avatarUrl: localStorage.getItem('studio_avatar') || '',
+    primaryColor: localStorage.getItem('studio_primary') || DEFAULT_PRIMARY,
+    secondaryColor: localStorage.getItem('studio_secondary') || DEFAULT_SECONDARY,
   });
 
   const setStudioSettings = (next) => {
@@ -64,9 +74,13 @@ export default function App() {
       const updated = {
         studioName: next.studioName ?? next.studio_name ?? prev.studioName,
         avatarUrl: next.avatarUrl ?? next.avatar_url ?? prev.avatarUrl,
+        primaryColor: next.primaryColor ?? next.primary_color ?? prev.primaryColor,
+        secondaryColor: next.secondaryColor ?? next.secondary_color ?? prev.secondaryColor,
       };
       localStorage.setItem('studio_name', updated.studioName);
       localStorage.setItem('studio_avatar', updated.avatarUrl || '');
+      localStorage.setItem('studio_primary', updated.primaryColor);
+      localStorage.setItem('studio_secondary', updated.secondaryColor);
       return updated;
     });
   };
@@ -79,11 +93,17 @@ export default function App() {
           setStudioSettings({
             studioName: s.studio_name,
             avatarUrl: s.avatar_url || '',
+            primaryColor: s.primary_color || DEFAULT_PRIMARY,
+            secondaryColor: s.secondary_color || DEFAULT_SECONDARY,
           });
         }
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    applyTheme(studioSettings.primaryColor, studioSettings.secondaryColor);
+  }, [studioSettings.primaryColor, studioSettings.secondaryColor]);
 
   useEffect(() => {
     document.title = `${studioSettings.studioName} — Agendamento`;
@@ -94,6 +114,8 @@ export default function App() {
       value={{
         studioName: studioSettings.studioName,
         avatarUrl: studioSettings.avatarUrl,
+        primaryColor: studioSettings.primaryColor,
+        secondaryColor: studioSettings.secondaryColor,
         setStudioSettings,
       }}
     >

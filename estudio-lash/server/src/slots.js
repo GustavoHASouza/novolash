@@ -95,10 +95,18 @@ export async function slotsFor(date, _durationMin) {
   return out;
 }
 
+export const customPrice = (raw) => {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return null;
+  const cents = Math.round(Number(String(raw).replace(',', '.')) * 100);
+  return Number.isFinite(cents) && cents >= 0 ? cents : undefined;
+};
+
 /** Cria agendamento. Retorna [statusHttp, corpo]. force=true ignora grade de horários (uso da profissional). */
 export async function book(b, { force = false } = {}) {
   const { date, time, name, phone, email, notes } = b || {};
   const serviceId = Number(b?.serviceId) || 0;
+  const price = force ? customPrice(b?.price) : null;
+  if (price === undefined) return [400, { error: 'Informe um valor válido para o atendimento' }];
   if (!name?.trim() || !phone?.trim() || !DATE.test(date || '') || !TIME.test(time || '')) {
     return [400, { error: 'Preencha nome, telefone, data e horário' }];
   }
@@ -138,9 +146,9 @@ export async function book(b, { force = false } = {}) {
 
   try {
     const { rows: [a] } = await q(
-      `INSERT INTO appointments (service_id, client_name, client_phone, client_email, notes, starts_at, ends_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, starts_at, ends_at`,
-      [serviceId, name.trim(), phone.trim(), email?.trim() || null, notes?.trim() || null, start, end]);
+      `INSERT INTO appointments (service_id, client_name, client_phone, client_email, notes, starts_at, ends_at, price_cents)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, starts_at, ends_at`,
+      [serviceId, name.trim(), phone.trim(), email?.trim() || null, notes?.trim() || null, start, end, price]);
     return [201, a];
   } catch (e) {
     if (e.code === '23P01') return [409, { error: 'Este horário não está mais disponível' }];
