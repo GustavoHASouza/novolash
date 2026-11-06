@@ -255,10 +255,26 @@ const serviceValues = (b: any) => {
 };
 
 const itemValues = (b: any) => {
-  const name = b?.name?.trim();
+  const sectionId = Number(b?.section_id) || 0;
+  const name = String(b?.name || "").trim();
+  const qty = parseInt(b?.quantity ?? 0, 10);
   const min = parseInt(b?.min_quantity ?? 0, 10);
-  if (!name || !(min >= 0)) return null;
-  return [name, b.category?.trim() || "Outros", b.description?.trim() || "", b.unit?.trim() || "un", min];
+  if (!sectionId || !name || name.length > 120 || !(qty >= 0) || !(min >= 0)) return null;
+  return [sectionId, name, String(b?.description || "").trim().slice(0, 300), qty, min];
+};
+
+const clientValues = (b: any): unknown[] | string => {
+  const name = String(b?.name || "").trim();
+  const phone = String(b?.phone || "").trim();
+  const photo = String(b?.photo_url || "");
+  if (!name || name.length > 120) return "Informe o nome da cliente";
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 10 || digits.length > 13) return "Informe um telefone (WhatsApp) válido com DDD";
+  if (photo && !/^data:image\/(jpeg|png|webp);base64,/.test(photo) && !/^https:\/\//.test(photo)) {
+    return "Formato de foto inválido";
+  }
+  if (photo.length > 400000) return "A foto é muito grande";
+  return [name, phone, photo];
 };
 
 Deno.serve(async (req: Request) => {
@@ -642,43 +658,46 @@ Deno.serve(async (req: Request) => {
         saldo: sum("receita") - sum("despesa"), categorias: rows });
     }
 
-    // Estoque
-    if (sub === "/inventory" && method === "GET") {
+    // Categorias do Financeiro
+    if (sub === "/finance-categories" && method === "GET") {
       const { rows } = await q(
-        `SELECT i.*,
-                COALESCE((SELECT SUM(cost_cents) FROM public.inventory_movements mv
-                          WHERE mv.item_id = i.id AND mv.type = 'entrada'), 0)::int AS invested_cents
-         FROM public.inventory_items i ORDER BY i.category, i.name`);
+        `SELECT id, name, position FROM public.finance_categories ORDER BY position, lower(name), id`);
       return json(rows);
     }
 
-    if (sub === "/inventory" && method === "POST") {
-      const v = itemValues(body);
-      const qty = parseInt(body.quantity ?? 0, 10);
-      const cost = toCents(body.cost);
-      const date = DATE.test(body.occurred_on || "") ? body.occurred_on : todayLocal();
-      if (!v || !(qty >= 0) || !(cost >= 0)) return bad();
+    if (sub === "/finance-categories" && method === "POST") {
+      const name = String(body.name || "").trim();
+      if (!name || name.length > 60) return bad("Informe um nome de categoria válido");
+      const { rows: dup } = await q(
+        "SELECT id FROM public.finance_categories WHERE lower(name) = lower($1)", [name]);
+      if (dup.length > 0) return bad("Já existe uma categoria com esse nome");
+      const { rows: [cat] } = await q(
+        `INSERT INTO public.finance_categories (name, position)
+         VALUES ($1, COALESCE((SELECT MAX(position) FROM public.finance_categories), 0) + 1)
+         RETURNING id, name, position`, [name]);
+      return json(cat, 201);
+    }
+
+    if ((m = sub.match(/^\/finance-categories\/(\d+)$/)) && method === "PUT") {
+      const id = Number(m[1]);
+      const name = String(body.name || "").trim();
+      if (!name || name.length > 60) return bad("Informe um nome de categoria válido");
+      const { rows: [cur] } = await q("SELECT id, name FROM public.finance_categories WHERE id = $1", [id]);
+      if (!cur) return json({ error: "Categoria não encontrada" }, 404);
+      const { rows: dup } = await q(
+        "SELECT id FROM public.finance_categories WHERE lower(name) = lower($1) AND id <> $2", [name, id]);
+      if (dup.length > 0) return bad("Já existe uma categoria com esse nome");
       const c = await pool.connect();
       try {
         await c.query("BEGIN");
-        const { rows: [item] } = await c.query(
-          `INSERT INTO public.inventory_items (name, category, description, unit, min_quantity, quantity)
-           VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [...v, qty]);
-        let txId = null;
-        if (cost > 0) {
-          const { rows: [t] } = await c.query(
-            `INSERT INTO public.transactions (type, description, category, amount_cents, occurred_on)
-             VALUES ('despesa', $1, 'Material', $2, $3) RETURNING id`,
-            [`Estoque: ${item.name} (${qty} ${item.unit})`, cost, date]);
-          txId = t.id;
-        }
-        if (qty > 0) {
-          await c.query(
-            `INSERT INTO public.inventory_movements (item_id, type, quantity, cost_cents, occurred_on, transaction_id)
-             VALUES ($1, 'entrada', $2, $3, $4, $5)`, [item.id, qty, cost, date, txId]);
-        }
+        const { rows: [cat] } = await c.query(
+          "UPDATE public.finance_categories SET name = $1 WHERE id = $2 RETURNING id, name, position",
+          [name, id]);
+        await c.query(
+          "UPDATE public.transactions SET category = $1 WHERE lower(category) = lower($2)",
+          [name, cur.name]);
         await c.query("COMMIT");
-        return json(item, 201);
+        return json(cat);
       } catch (e) {
         await c.query("ROLLBACK");
         throw e;
@@ -687,12 +706,78 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    if ((m = sub.match(/^\/finance-categories\/(\d+)$/)) && method === "DELETE") {
+      await q("DELETE FROM public.finance_categories WHERE id = $1", [Number(m[1])]);
+      return json({ ok: true });
+    }
+
+    // Estoque (independente do Financeiro): seções e itens
+    if (sub === "/inventory" && method === "GET") {
+      const [sections, items] = await Promise.all([
+        q(`SELECT id, name, position FROM public.inventory_sections ORDER BY position, id`),
+        q(`SELECT id, section_id, name, description, quantity, min_quantity
+           FROM public.inventory_items WHERE section_id IS NOT NULL
+           ORDER BY lower(name), id`),
+      ]);
+      return json({ sections: sections.rows, items: items.rows });
+    }
+
+    if (sub === "/inventory/sections" && method === "POST") {
+      const name = String(body.name || "").trim();
+      if (!name || name.length > 80) return bad("Informe um nome de seção válido");
+      const { rows: [s] } = await q(
+        `INSERT INTO public.inventory_sections (name, position)
+         VALUES ($1, COALESCE((SELECT MAX(position) FROM public.inventory_sections), 0) + 1)
+         RETURNING id, name, position`, [name]);
+      return json(s, 201);
+    }
+
+    if ((m = sub.match(/^\/inventory\/sections\/(\d+)$/)) && method === "PUT") {
+      const name = String(body.name || "").trim();
+      if (!name || name.length > 80) return bad("Informe um nome de seção válido");
+      const { rows: [s] } = await q(
+        "UPDATE public.inventory_sections SET name = $1 WHERE id = $2 RETURNING id, name, position",
+        [name, Number(m[1])]);
+      if (!s) return json({ error: "Seção não encontrada" }, 404);
+      return json(s);
+    }
+
+    if ((m = sub.match(/^\/inventory\/sections\/(\d+)$/)) && method === "DELETE") {
+      await q("DELETE FROM public.inventory_sections WHERE id = $1", [Number(m[1])]);
+      return json({ ok: true });
+    }
+
+    if (sub === "/inventory" && method === "POST") {
+      const v = itemValues(body);
+      if (!v) return bad("Preencha o nome do item, a seção e uma quantidade válida");
+      const { rows: [sec] } = await q("SELECT id FROM public.inventory_sections WHERE id = $1", [v[0]]);
+      if (!sec) return json({ error: "Seção não encontrada" }, 404);
+      const { rows: [item] } = await q(
+        `INSERT INTO public.inventory_items (section_id, name, description, quantity, min_quantity, category, unit)
+         VALUES ($1,$2,$3,$4,$5,'Outros','un')
+         RETURNING id, section_id, name, description, quantity, min_quantity`, v);
+      return json(item, 201);
+    }
+
     if ((m = sub.match(/^\/inventory\/(\d+)$/)) && method === "PUT") {
       const v = itemValues(body);
-      if (!v) return bad();
+      if (!v) return bad("Preencha o nome do item, a seção e uma quantidade válida");
       const { rows: [item] } = await q(
-        `UPDATE public.inventory_items SET name=$1, category=$2, description=$3, unit=$4, min_quantity=$5
-         WHERE id=$6 RETURNING *`, [...v, Number(m[1])]);
+        `UPDATE public.inventory_items
+         SET section_id = $1, name = $2, description = $3, quantity = $4, min_quantity = $5
+         WHERE id = $6
+         RETURNING id, section_id, name, description, quantity, min_quantity`, [...v, Number(m[1])]);
+      if (!item) return json({ error: "Item não encontrado" }, 404);
+      return json(item);
+    }
+
+    if ((m = sub.match(/^\/inventory\/(\d+)\/quantity$/)) && method === "PATCH") {
+      const delta = parseInt(body.delta, 10);
+      if (!Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 100000) return bad();
+      const { rows: [item] } = await q(
+        `UPDATE public.inventory_items SET quantity = GREATEST(0, quantity + $1)
+         WHERE id = $2
+         RETURNING id, section_id, name, description, quantity, min_quantity`, [delta, Number(m[1])]);
       if (!item) return json({ error: "Item não encontrado" }, 404);
       return json(item);
     }
@@ -702,56 +787,35 @@ Deno.serve(async (req: Request) => {
       return json({ ok: true });
     }
 
-    if ((m = sub.match(/^\/inventory\/(\d+)\/movements$/)) && method === "GET") {
+    // Clientes
+    if (sub === "/clients" && method === "GET") {
       const { rows } = await q(
-        `SELECT id, type, quantity, cost_cents, occurred_on::text AS occurred_on
-         FROM public.inventory_movements WHERE item_id = $1
-         ORDER BY occurred_on DESC, id DESC LIMIT 50`, [Number(m[1])]);
+        `SELECT id, name, phone, photo_url FROM public.clients ORDER BY lower(name), id`);
       return json(rows);
     }
 
-    if ((m = sub.match(/^\/inventory\/(\d+)\/movements$/)) && method === "POST") {
-      const itemId = Number(m[1]);
-      const type = body.type;
-      const qty = parseInt(body.quantity, 10);
-      const cost = type === "entrada" ? toCents(body.cost) : 0;
-      const date = DATE.test(body.occurred_on || "") ? body.occurred_on : todayLocal();
-      if (!["entrada", "saida"].includes(type) || !(qty > 0) || !(cost >= 0)) return bad();
-      const c = await pool.connect();
-      try {
-        await c.query("BEGIN");
-        const { rows: [item] } = await c.query(
-          "SELECT * FROM public.inventory_items WHERE id = $1 FOR UPDATE", [itemId]);
-        if (!item) {
-          await c.query("ROLLBACK");
-          return json({ error: "Item não encontrado" }, 404);
-        }
-        if (type === "saida" && item.quantity < qty) {
-          await c.query("ROLLBACK");
-          return bad(`Quantidade indisponível. Em estoque: ${item.quantity} ${item.unit}`);
-        }
-        let txId = null;
-        if (cost > 0) {
-          const { rows: [t] } = await c.query(
-            `INSERT INTO public.transactions (type, description, category, amount_cents, occurred_on)
-             VALUES ('despesa', $1, 'Material', $2, $3) RETURNING id`,
-            [`Estoque: ${item.name} (${qty} ${item.unit})`, cost, date]);
-          txId = t.id;
-        }
-        await c.query(
-          `INSERT INTO public.inventory_movements (item_id, type, quantity, cost_cents, occurred_on, transaction_id)
-           VALUES ($1,$2,$3,$4,$5,$6)`, [itemId, type, qty, cost, date, txId]);
-        const { rows: [updated] } = await c.query(
-          `UPDATE public.inventory_items SET quantity = quantity + $1 WHERE id = $2 RETURNING *`,
-          [type === "entrada" ? qty : -qty, itemId]);
-        await c.query("COMMIT");
-        return json(updated);
-      } catch (e) {
-        await c.query("ROLLBACK");
-        throw e;
-      } finally {
-        c.release();
-      }
+    if (sub === "/clients" && method === "POST") {
+      const v = clientValues(body);
+      if (typeof v === "string") return bad(v);
+      const { rows: [c] } = await q(
+        `INSERT INTO public.clients (name, phone, photo_url) VALUES ($1,$2,$3)
+         RETURNING id, name, phone, photo_url`, v);
+      return json(c, 201);
+    }
+
+    if ((m = sub.match(/^\/clients\/(\d+)$/)) && method === "PUT") {
+      const v = clientValues(body);
+      if (typeof v === "string") return bad(v);
+      const { rows: [c] } = await q(
+        `UPDATE public.clients SET name = $1, phone = $2, photo_url = $3, updated_at = now()
+         WHERE id = $4 RETURNING id, name, phone, photo_url`, [...v, Number(m[1])]);
+      if (!c) return json({ error: "Cliente não encontrada" }, 404);
+      return json(c);
+    }
+
+    if ((m = sub.match(/^\/clients\/(\d+)$/)) && method === "DELETE") {
+      await q("DELETE FROM public.clients WHERE id = $1", [Number(m[1])]);
+      return json({ ok: true });
     }
 
     return json({ error: "Rota não encontrada" }, 404);

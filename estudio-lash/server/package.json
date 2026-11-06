@@ -6,9 +6,12 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "migrate": "node src/migrate.js"
+    "migrate": "node src/migrate.js",
+    "dev:api": "node --watch-path=../supabase/functions/api --watch-path=./dev-edge dev-edge/server.mjs"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

@@ -365,55 +365,44 @@ r.get('/summary', async (req, res) => {
   res.json({ receita: sum('receita'), despesa: sum('despesa'), saldo: sum('receita') - sum('despesa'), categorias: rows });
 });
 
-/* ---------- Estoque (Inventory) ---------- */
-r.get('/inventory', async (_req, res) => {
-  const { rows } = await q(
-    `SELECT id, name, description, quantity, unit, last_cost_cents, updated_at
-     FROM inventory_items
-     ORDER BY name ASC, id ASC`
-  );
+/* ---------- Categorias do Financeiro ---------- */
+r.get('/finance-categories', async (_req, res) => {
+  const { rows } = await q('SELECT id, name, position FROM finance_categories ORDER BY position, lower(name), id');
   res.json(rows);
 });
 
-r.post('/inventory', async (req, res) => {
-  const name = req.body?.name?.trim();
-  const description = req.body?.description?.trim() || '';
-  const quantity = Math.max(0, parseInt(req.body?.quantity ?? 0, 10) || 0);
-  const unit = req.body?.unit?.trim() || 'un';
-  const costCents = Math.max(0, Math.round(Number(req.body?.cost || 0) * 100));
-  const occurredOn = DATE.test(req.body?.occurred_on || '') ? req.body.occurred_on : localDate(new Date());
+r.post('/finance-categories', async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name || name.length > 60) return bad(res, 'Informe um nome de categoria válido');
+  const { rows: dup } = await q('SELECT id FROM finance_categories WHERE lower(name) = lower($1)', [name]);
+  if (dup.length > 0) return bad(res, 'Já existe uma categoria com esse nome');
+  const { rows: [cat] } = await q(
+    `INSERT INTO finance_categories (name, position)
+     VALUES ($1, COALESCE((SELECT MAX(position) FROM finance_categories), 0) + 1)
+     RETURNING id, name, position`,
+    [name]
+  );
+  res.status(201).json(cat);
+});
 
-  if (!name) return bad(res, 'Informe o nome do material');
-
+r.put('/finance-categories/:id', async (req, res) => {
+  const id = Number(req.params.id) || 0;
+  const name = String(req.body?.name || '').trim();
+  if (!name || name.length > 60) return bad(res, 'Informe um nome de categoria válido');
+  const { rows: [cur] } = await q('SELECT id, name FROM finance_categories WHERE id = $1', [id]);
+  if (!cur) return res.status(404).json({ error: 'Categoria não encontrada' });
+  const { rows: dup } = await q('SELECT id FROM finance_categories WHERE lower(name) = lower($1) AND id <> $2', [name, id]);
+  if (dup.length > 0) return bad(res, 'Já existe uma categoria com esse nome');
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    const { rows: [item] } = await c.query(
-      `INSERT INTO inventory_items (name, description, quantity, unit, last_cost_cents, updated_at)
-       VALUES ($1, $2, $3, $4, $5, now())
-       RETURNING id, name, description, quantity, unit, last_cost_cents, updated_at`,
-      [name, description, quantity, unit, costCents]
+    const { rows: [cat] } = await c.query(
+      'UPDATE finance_categories SET name = $1 WHERE id = $2 RETURNING id, name, position',
+      [name, id]
     );
-    let txId = null;
-    if (costCents > 0) {
-      const txDesc = `Estoque: ${name}${quantity > 0 ? ` (${quantity} ${unit})` : ''}`;
-      const { rows: [tx] } = await c.query(
-        `INSERT INTO transactions (type, description, category, amount_cents, occurred_on)
-         VALUES ('despesa', $1, 'Material', $2, $3::date)
-         RETURNING id`,
-        [txDesc, costCents, occurredOn]
-      );
-      txId = tx?.id ?? null;
-    }
-    if (quantity > 0 || costCents > 0) {
-      await c.query(
-        `INSERT INTO inventory_movements (item_id, delta, cost_cents, notes, transaction_id, occurred_on)
-         VALUES ($1, $2, $3, 'Cadastro inicial de estoque', $4, $5::date)`,
-        [item.id, quantity, costCents, txId, occurredOn]
-      );
-    }
+    await c.query('UPDATE transactions SET category = $1 WHERE lower(category) = lower($2)', [name, cur.name]);
     await c.query('COMMIT');
-    res.status(201).json({ ...item, transaction_id: txId });
+    res.json(cat);
   } catch (e) {
     await c.query('ROLLBACK');
     throw e;
@@ -422,20 +411,109 @@ r.post('/inventory', async (req, res) => {
   }
 });
 
-r.put('/inventory/:id', async (req, res) => {
-  const itemId = Number(req.params.id) || 0;
-  const name = req.body?.name?.trim();
-  const description = req.body?.description?.trim() || '';
-  const quantity = Math.max(0, parseInt(req.body?.quantity ?? 0, 10) || 0);
-  const unit = req.body?.unit?.trim() || 'un';
-  if (!name) return bad(res, 'Informe o nome do material');
+r.delete('/finance-categories/:id', async (req, res) => {
+  await q('DELETE FROM finance_categories WHERE id = $1', [Number(req.params.id) || 0]);
+  res.json({ ok: true });
+});
 
+/* ---------- Estoque (independente do Financeiro): seções e itens ---------- */
+const itemValues = (b) => {
+  const sectionId = Number(b?.section_id) || 0;
+  const name = String(b?.name || '').trim();
+  const qty = parseInt(b?.quantity ?? 0, 10);
+  const min = parseInt(b?.min_quantity ?? 0, 10);
+  if (!sectionId || !name || name.length > 120 || !(qty >= 0) || !(min >= 0)) return null;
+  return [sectionId, name, String(b?.description || '').trim().slice(0, 300), qty, min];
+};
+
+const clientValues = (b) => {
+  const name = String(b?.name || '').trim();
+  const phone = String(b?.phone || '').trim();
+  const photo = String(b?.photo_url || '');
+  if (!name || name.length > 120) return 'Informe o nome da cliente';
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 13) return 'Informe um telefone (WhatsApp) válido com DDD';
+  if (photo && !/^data:image\/(jpeg|png|webp);base64,/.test(photo) && !/^https:\/\//.test(photo)) {
+    return 'Formato de foto inválido';
+  }
+  if (photo.length > 400000) return 'A foto é muito grande';
+  return [name, phone, photo];
+};
+
+r.get('/inventory', async (_req, res) => {
+  const [sections, items] = await Promise.all([
+    q('SELECT id, name, position FROM inventory_sections ORDER BY position, id'),
+    q(`SELECT id, section_id, name, description, quantity, min_quantity
+       FROM inventory_items WHERE section_id IS NOT NULL
+       ORDER BY lower(name), id`),
+  ]);
+  res.json({ sections: sections.rows, items: items.rows });
+});
+
+r.post('/inventory/sections', async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name || name.length > 80) return bad(res, 'Informe um nome de seção válido');
+  const { rows: [s] } = await q(
+    `INSERT INTO inventory_sections (name, position)
+     VALUES ($1, COALESCE((SELECT MAX(position) FROM inventory_sections), 0) + 1)
+     RETURNING id, name, position`,
+    [name]
+  );
+  res.status(201).json(s);
+});
+
+r.put('/inventory/sections/:id', async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name || name.length > 80) return bad(res, 'Informe um nome de seção válido');
+  const { rows: [s] } = await q(
+    'UPDATE inventory_sections SET name = $1 WHERE id = $2 RETURNING id, name, position',
+    [name, Number(req.params.id) || 0]
+  );
+  if (!s) return res.status(404).json({ error: 'Seção não encontrada' });
+  res.json(s);
+});
+
+r.delete('/inventory/sections/:id', async (req, res) => {
+  await q('DELETE FROM inventory_sections WHERE id = $1', [Number(req.params.id) || 0]);
+  res.json({ ok: true });
+});
+
+r.post('/inventory', async (req, res) => {
+  const v = itemValues(req.body);
+  if (!v) return bad(res, 'Preencha o nome do item, a seção e uma quantidade válida');
+  const { rows: [sec] } = await q('SELECT id FROM inventory_sections WHERE id = $1', [v[0]]);
+  if (!sec) return res.status(404).json({ error: 'Seção não encontrada' });
+  const { rows: [item] } = await q(
+    `INSERT INTO inventory_items (section_id, name, description, quantity, min_quantity, category, unit)
+     VALUES ($1,$2,$3,$4,$5,'Outros','un')
+     RETURNING id, section_id, name, description, quantity, min_quantity`,
+    v
+  );
+  res.status(201).json(item);
+});
+
+r.put('/inventory/:id', async (req, res) => {
+  const v = itemValues(req.body);
+  if (!v) return bad(res, 'Preencha o nome do item, a seção e uma quantidade válida');
   const { rows: [item] } = await q(
     `UPDATE inventory_items
-     SET name = $1, description = $2, quantity = $3, unit = $4, updated_at = now()
-     WHERE id = $5
-     RETURNING id, name, description, quantity, unit, last_cost_cents, updated_at`,
-    [name, description, quantity, unit, itemId]
+     SET section_id = $1, name = $2, description = $3, quantity = $4, min_quantity = $5
+     WHERE id = $6
+     RETURNING id, section_id, name, description, quantity, min_quantity`,
+    [...v, Number(req.params.id) || 0]
+  );
+  if (!item) return res.status(404).json({ error: 'Item não encontrado' });
+  res.json(item);
+});
+
+r.patch('/inventory/:id/quantity', async (req, res) => {
+  const delta = parseInt(req.body?.delta, 10);
+  if (!Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 100000) return bad(res);
+  const { rows: [item] } = await q(
+    `UPDATE inventory_items SET quantity = GREATEST(0, quantity + $1)
+     WHERE id = $2
+     RETURNING id, section_id, name, description, quantity, min_quantity`,
+    [delta, Number(req.params.id) || 0]
   );
   if (!item) return res.status(404).json({ error: 'Item não encontrado' });
   res.json(item);
@@ -446,81 +524,39 @@ r.delete('/inventory/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-r.post('/inventory/:id/movements', async (req, res) => {
-  const itemId = Number(req.params.id) || 0;
-  const delta = parseInt(req.body?.delta ?? 0, 10) || 0;
-  const costCents = Math.max(0, Math.round(Number(req.body?.cost || 0) * 100));
-  const notes = req.body?.notes?.trim() || '';
-  const occurredOn = DATE.test(req.body?.occurred_on || '') ? req.body.occurred_on : localDate(new Date());
-
-  if (delta === 0 && costCents === 0) {
-    return bad(res, 'Informe a quantidade ou valor a movimentar');
-  }
-
-  const c = await pool.connect();
-  try {
-    await c.query('BEGIN');
-    const { rows: [existing] } = await c.query(
-      'SELECT id, name, quantity, unit, last_cost_cents FROM inventory_items WHERE id = $1 FOR UPDATE',
-      [itemId]
-    );
-    if (!existing) {
-      await c.query('ROLLBACK');
-      return res.status(404).json({ error: 'Item não encontrado' });
-    }
-    const newQty = Math.max(0, existing.quantity + delta);
-    const newLastCost = costCents > 0 ? costCents : existing.last_cost_cents;
-
-    const { rows: [updated] } = await c.query(
-      `UPDATE inventory_items
-       SET quantity = $1, last_cost_cents = $2, updated_at = now()
-       WHERE id = $3
-       RETURNING id, name, description, quantity, unit, last_cost_cents, updated_at`,
-      [newQty, newLastCost, itemId]
-    );
-
-    let txId = null;
-    if (costCents > 0) {
-      const qtyLabel = delta > 0 ? ` (+${delta} ${existing.unit})` : '';
-      const txDesc = notes
-        ? `Estoque: ${existing.name}${qtyLabel} — ${notes}`
-        : `Compra de estoque: ${existing.name}${qtyLabel}`;
-      const { rows: [tx] } = await c.query(
-        `INSERT INTO transactions (type, description, category, amount_cents, occurred_on)
-         VALUES ('despesa', $1, 'Material', $2, $3::date)
-         RETURNING id`,
-        [txDesc, costCents, occurredOn]
-      );
-      txId = tx?.id ?? null;
-    }
-
-    await c.query(
-      `INSERT INTO inventory_movements (item_id, delta, cost_cents, notes, transaction_id, occurred_on)
-       VALUES ($1, $2, $3, $4, $5, $6::date)`,
-      [itemId, delta, costCents, notes || (delta > 0 ? 'Entrada de estoque' : 'Baixa de estoque'), txId, occurredOn]
-    );
-
-    await c.query('COMMIT');
-    res.json({ item: updated, transaction_id: txId });
-  } catch (e) {
-    await c.query('ROLLBACK');
-    throw e;
-  } finally {
-    c.release();
-  }
-});
-
-r.get('/inventory/:id/movements', async (req, res) => {
-  const itemId = Number(req.params.id) || 0;
-  const { rows } = await q(
-    `SELECT id, item_id, delta, cost_cents, notes, transaction_id, occurred_on::text AS occurred_on, created_at
-     FROM inventory_movements
-     WHERE item_id = $1
-     ORDER BY created_at DESC
-     LIMIT 30`,
-    [itemId]
-  );
+/* ---------- Clientes ---------- */
+r.get('/clients', async (_req, res) => {
+  const { rows } = await q('SELECT id, name, phone, photo_url FROM clients ORDER BY lower(name), id');
   res.json(rows);
 });
+
+r.post('/clients', async (req, res) => {
+  const v = clientValues(req.body);
+  if (typeof v === 'string') return bad(res, v);
+  const { rows: [c] } = await q(
+    `INSERT INTO clients (name, phone, photo_url) VALUES ($1,$2,$3)
+     RETURNING id, name, phone, photo_url`,
+    v
+  );
+  res.status(201).json(c);
+});
+
+r.put('/clients/:id', async (req, res) => {
+  const v = clientValues(req.body);
+  if (typeof v === 'string') return bad(res, v);
+  const { rows: [c] } = await q(
+    `UPDATE clients SET name = $1, phone = $2, photo_url = $3, updated_at = now()
+     WHERE id = $4 RETURNING id, name, phone, photo_url`,
+    [...v, Number(req.params.id) || 0]
+  );
+  if (!c) return res.status(404).json({ error: 'Cliente não encontrada' });
+  res.json(c);
+});
+
+r.delete('/clients/:id', async (req, res) => {
+  await q('DELETE FROM clients WHERE id = $1', [Number(req.params.id) || 0]);
+  res.json({ ok: true });
+});
+
 
 export default r;

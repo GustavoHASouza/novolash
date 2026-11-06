@@ -4,6 +4,7 @@ import Login from './Login.jsx';
 import Agenda from './Agenda.jsx';
 import Finance from './Finance.jsx';
 import Inventory from './Inventory.jsx';
+import Clients from './Clients.jsx';
 import Settings from './Settings.jsx';
 import Account from './Account.jsx';
 import { useStudio } from '../api.js';
@@ -12,6 +13,7 @@ const TABS = {
   agenda: 'Agenda',
   financeiro: 'Financeiro',
   estoque: 'Estoque',
+  clientes: 'Clientes',
   config: 'Serviços e Horários',
 };
 
@@ -86,6 +88,7 @@ export default function Admin() {
         {tab === 'agenda' && <Agenda />}
         {tab === 'financeiro' && <Finance />}
         {tab === 'estoque' && <Inventory />}
+        {tab === 'clientes' && <Clients />}
         {tab === 'config' && <Settings />}
         {tab === 'conta' && <Account onBack={() => setTab('agenda')} />}
       </div>

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, money, TZ } from '../api.js';
 import { ConfirmDialog, Modal, Toast } from '../components/Dialog.jsx';
+import { Avatar, blankClient, ClientFormModal, digitsOf, maskPhone, normalize } from './Clients.jsx';
 
 const BLOCK = '__bloqueio';
 
@@ -141,10 +142,56 @@ export default function Agenda() {
   const [editing, setEditing] = useState(null);
   const [editForm, setEditForm] = useState(null);
 
+  // Clientes cadastradas para seleção no Agendamento Manual
+  const [clients, setClients] = useState([]);
+  const [clientQuery, setClientQuery] = useState('');
+  const [clientDropOpen, setClientDropOpen] = useState(false);
+  const [newClientModal, setNewClientModal] = useState(null);
+  const clientPickerRef = useRef(null);
+
   const services = useMemo(() => allServices.filter((x) => x.active), [allServices]);
   const monthInfo = useMemo(() => getMonthInfo(currentMonth), [currentMonth]);
   const isBlockForm = f.serviceId === BLOCK;
   const closeToast = useCallback(() => setToast(null), []);
+
+  const loadClients = useCallback(() => {
+    api
+      .admin('/clients')
+      .then((list) => setClients(list || []))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadClients();
+  }, [loadClients]);
+
+  useEffect(() => {
+    const onDocDown = (e) => {
+      if (clientPickerRef.current && !clientPickerRef.current.contains(e.target)) {
+        setClientDropOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, []);
+
+  const filteredClients = useMemo(() => {
+    const q = normalize(clientQuery.trim());
+    const qDigits = digitsOf(clientQuery);
+    return clients
+      .filter(
+        (c) =>
+          !q ||
+          normalize(c.name).includes(q) ||
+          (qDigits.length >= 2 && digitsOf(c.phone).includes(qDigits))
+      )
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base' }));
+  }, [clients, clientQuery]);
+
+  const selectedClient = useMemo(
+    () => clients.find((c) => c.id === f.clientId) || (f.name && f.phone ? { name: f.name, phone: f.phone, photo_url: '' } : null),
+    [clients, f.clientId, f.name, f.phone]
+  );
 
   const load = useCallback(async () => {
     try {
@@ -190,6 +237,10 @@ export default function Agenda() {
 
   async function create(e) {
     e.preventDefault();
+    if (!isBlockForm && (!f.name?.trim() || !f.phone?.trim())) {
+      setToast({ err: 'Selecione uma cliente cadastrada ou clique no + para cadastrar uma nova cliente.' });
+      return;
+    }
     setSaving(true);
     try {
       if (isBlockForm) {
@@ -210,6 +261,7 @@ export default function Agenda() {
       const targetDate = isBlockForm ? f.start_date : f.date;
       setOpenForm(false);
       setF(emptyForm(targetDate));
+      setClientQuery('');
       setToast({ ok: isBlockForm ? 'Período indisponível registrado.' : 'Agendamento salvo.' });
       if (targetDate.slice(0, 7) !== currentMonth) {
         setCurrentMonth(targetDate.slice(0, 7));
@@ -366,6 +418,25 @@ export default function Agenda() {
           title={alertInfo.title}
           message={alertInfo.message}
           onCancel={() => setAlertInfo(null)}
+        />
+      )}
+
+      {newClientModal && (
+        <ClientFormModal
+          initialClient={newClientModal}
+          onClose={() => setNewClientModal(null)}
+          onSaved={(saved) => {
+            setNewClientModal(null);
+            loadClients();
+            setF((prev) => ({
+              ...prev,
+              clientId: saved.id,
+              name: saved.name,
+              phone: saved.phone,
+            }));
+            setClientQuery('');
+            setToast({ ok: `${saved.name} adicionada e selecionada para o agendamento.` });
+          }}
         />
       )}
 
@@ -578,24 +649,99 @@ export default function Agenda() {
                     onChange={(e) => setF({ ...f, time: e.target.value })}
                   />
                 </label>
-                <label>
-                  Nome da cliente
-                  <input
-                    required
-                    placeholder="Nome completo"
-                    value={f.name}
-                    onChange={(e) => setF({ ...f, name: e.target.value })}
-                  />
-                </label>
-                <label>
-                  Telefone / WhatsApp
-                  <input
-                    required
-                    type="tel"
-                    placeholder="(00) 00000-0000"
-                    value={f.phone}
-                    onChange={(e) => setF({ ...f, phone: e.target.value })}
-                  />
+                <label className={`agenda-client-field ${selectedClient ? 'has-client' : ''}`}>
+                  Cliente
+                  <div className="agenda-client-picker-row" ref={clientPickerRef}>
+                    {selectedClient ? (
+                      <div className="agenda-client-selected">
+                        <Avatar client={selectedClient} size="sm" />
+                        <div className="agenda-client-selected-text">
+                          <strong>{selectedClient.name}</strong>
+                          <span className="num">{maskPhone(selectedClient.phone) || selectedClient.phone}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="agenda-client-clear"
+                          title="Trocar cliente"
+                          onClick={() => {
+                            setF({ ...f, clientId: null, name: '', phone: '' });
+                            setClientQuery('');
+                            setClientDropOpen(true);
+                          }}
+                        >
+                          Trocar
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="agenda-client-search-box">
+                        <input
+                          placeholder="Pesquisar cliente pelo nome ou telefone..."
+                          value={clientQuery}
+                          onFocus={() => setClientDropOpen(true)}
+                          onChange={(e) => {
+                            setClientQuery(e.target.value);
+                            setClientDropOpen(true);
+                          }}
+                        />
+                        {clientDropOpen && (
+                          <div className="agenda-client-dropdown">
+                            {filteredClients.length === 0 ? (
+                              <div className="agenda-client-empty">
+                                <span>Nenhuma cliente encontrada.</span>
+                                <button
+                                  type="button"
+                                  className="link-btn"
+                                  onClick={() => {
+                                    setClientDropOpen(false);
+                                    setNewClientModal({ ...blankClient(), name: clientQuery.trim() });
+                                  }}
+                                >
+                                  + Cadastrar nova cliente
+                                </button>
+                              </div>
+                            ) : (
+                              <ul className="agenda-client-list">
+                                {filteredClients.map((c) => (
+                                  <li key={c.id}>
+                                    <button
+                                      type="button"
+                                      className="agenda-client-option"
+                                      onClick={() => {
+                                        setF({ ...f, clientId: c.id, name: c.name, phone: c.phone });
+                                        setClientQuery('');
+                                        setClientDropOpen(false);
+                                      }}
+                                    >
+                                      <Avatar client={c} size="sm" />
+                                      <div className="agenda-client-option-text">
+                                        <strong>{c.name}</strong>
+                                        <span className="num">{maskPhone(c.phone) || c.phone}</span>
+                                      </div>
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      className="agenda-client-add-btn"
+                      title="Cadastrar nova cliente"
+                      aria-label="Cadastrar nova cliente"
+                      onClick={() => {
+                        setClientDropOpen(false);
+                        setNewClientModal(blankClient());
+                      }}
+                    >
+                      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                        <path d="M10 4v12M4 10h12" />
+                      </svg>
+                    </button>
+                  </div>
                 </label>
                 <label>
                   Observações (opcional)
